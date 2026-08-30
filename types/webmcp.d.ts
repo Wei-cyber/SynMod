@@ -3,7 +3,7 @@ interface WebMcpToolDefinition {
   description: string;
   inputSchema?: Record<string, unknown>;
   annotations?: Record<string, boolean>;
-  execute: (input: unknown, options?: { signal?: AbortSignal }) => unknown | Promise<unknown>;
+  execute: (input: unknown, options?: { signal?: AbortSignal }) => unknown;
 }
 
 interface WebMcpModelContext {

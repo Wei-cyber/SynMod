@@ -12,20 +12,26 @@ import {
   CircleDot,
   Cone,
   Copy,
+  Combine,
   Cylinder,
   Download,
+  Eye,
+  EyeOff,
   FileJson,
   Focus,
   Grid3X3,
   Group,
-  Layers3,
   MousePointer2,
+  ImageDown,
+  ImagePlus,
+  Minus,
   PanelLeft,
   Redo2,
   Rotate3D,
   Scale3D,
   SlidersHorizontal,
   Sparkles,
+  SunMedium,
   Trash2,
   Undo2,
   Ungroup,
@@ -45,10 +51,10 @@ import { Input } from '@/components/ui/input';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Slider } from '@/components/ui/slider';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { exportSceneGlb, validateAndEncodeGlb } from '@/lib/gltf-files';
-import { downloadJson, readJsonProject } from '@/lib/persistence';
+import { exportSceneGlb, exportViewportPng, validateAndEncodeGlb } from '@/lib/gltf-files';
+import { downloadJson, imageFileToDataUrl, readJsonProject } from '@/lib/persistence';
 import { useStudioStore } from '@/lib/studio-store';
-import { PRIMITIVE_LABELS, type PrimitiveType, type StudioObject, type Vec3 } from '@/lib/studio-types';
+import { isPrimitiveType, PRIMITIVE_LABELS, type EnvironmentPreset, type PrimitiveGeometry, type PrimitiveType, type StudioObject, type Vec3 } from '@/lib/studio-types';
 
 const StudioCanvas = dynamic(
   () => import('@/components/studio-canvas').then((module) => module.StudioCanvas),
@@ -82,8 +88,8 @@ function FileActions() {
     if (!file) return;
     try {
       if (file.name.toLowerCase().endsWith('.glb')) {
-        const assetDataUrl = await validateAndEncodeGlb(file);
-        execute({ type: 'import_glb', name: file.name.replace(/\.glb$/i, ''), assetDataUrl });
+        const imported = await validateAndEncodeGlb(file);
+        execute({ type: 'import_glb', name: file.name.replace(/\.glb$/i, ''), ...imported });
       } else {
         replaceDocument(await readJsonProject(file));
       }
@@ -103,6 +109,7 @@ function FileActions() {
         <DropdownMenuContent align="end" className="w-48">
           <DropdownMenuItem onClick={() => downloadJson(doc)}><FileJson /> Editable project JSON</DropdownMenuItem>
           <DropdownMenuItem onClick={() => void exportSceneGlb().catch((error) => setError(error instanceof Error ? error.message : 'GLB export failed.'))}><Box /> Rendered scene GLB</DropdownMenuItem>
+          <DropdownMenuItem onClick={() => void exportViewportPng().catch((error) => setError(error instanceof Error ? error.message : 'PNG render failed.'))}><ImageDown /> 2× viewport PNG</DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
     </>
@@ -127,7 +134,8 @@ function PrimitivePalette() {
 
 function ObjectGlyph({ object }: { object: StudioObject }) {
   if (object.type === 'group') return <Group />;
-  if (object.type === 'glb') return <Box />;
+  if (object.type === 'glb' || object.type === 'glb_node') return <Box />;
+  if (object.type === 'boolean') return <Combine />;
   return <span>{object.type.slice(0, 1).toUpperCase()}</span>;
 }
 
@@ -141,13 +149,13 @@ function OutlinerRow({ object, depth }: { object: StudioObject; depth: number })
     <>
       <button
         type="button"
-        className={selected ? 'selected' : ''}
+        className={`${selected ? 'selected' : ''} ${!object.visible ? 'object-hidden' : ''}`}
         style={{ paddingLeft: 7 + depth * 14 }}
         onClick={(event) => select(event.shiftKey ? selected ? selection.filter((id) => id !== object.id) : [...selection, object.id] : [object.id])}
       >
         <span className="object-glyph"><ObjectGlyph object={object} /></span>
         <span className="object-row-name">{object.name}</span>
-        <span className="object-type">{object.type}</span>
+        <span className="object-type">{!object.visible && <EyeOff />} {object.type === 'glb_node' ? object.assetNodeKind : object.type}</span>
       </button>
       {children.map((child) => <OutlinerRow key={child.id} object={child} depth={depth + 1} />)}
     </>
@@ -159,6 +167,10 @@ function SceneOutliner() {
   const selection = useStudioStore((state) => state.selection);
   const execute = useStudioStore((state) => state.execute);
   const selectedObject = objects.find((item) => item.id === selection[0]);
+  const selectedObjects = selection.map((id) => objects.find((item) => item.id === id)).filter(Boolean) as StudioObject[];
+  const canBoolean = selectedObjects.length === 2
+    && selectedObjects.every((item) => isPrimitiveType(item.type) || item.type === 'boolean')
+    && selectedObjects[0].parentId === selectedObjects[1].parentId;
   return (
     <div className="panel-section outliner-section">
       <div className="section-heading"><p className="eyebrow">SCENE</p><span>{objects.length} objects</span></div>
@@ -167,6 +179,14 @@ function SceneOutliner() {
         {!objects.length && <p className="empty-state">Add a primitive to start shaping your scene.</p>}
       </div>
       <div className="outliner-actions">
+        <DropdownMenu>
+          <DropdownMenuTrigger render={<Button variant="ghost" size="xs" disabled={!canBoolean} />}><Combine /> Boolean</DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="w-44">
+            <DropdownMenuItem onClick={() => execute({ type: 'boolean', operation: 'union', operandIds: selection as [string, string] })}><Combine /> Union</DropdownMenuItem>
+            <DropdownMenuItem onClick={() => execute({ type: 'boolean', operation: 'subtract', operandIds: selection as [string, string] })}><Minus /> Subtract second</DropdownMenuItem>
+            <DropdownMenuItem onClick={() => execute({ type: 'boolean', operation: 'intersect', operandIds: selection as [string, string] })}><CircleDot /> Intersect</DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
         <Button variant="ghost" size="xs" disabled={selection.length < 2} onClick={() => execute({ type: 'group', objectIds: selection })}><Group /> Group</Button>
         <Button variant="ghost" size="xs" disabled={!selectedObject || selectedObject.type !== 'group'} onClick={() => selectedObject && execute({ type: 'ungroup', groupId: selectedObject.id })}><Ungroup /> Ungroup</Button>
       </div>
@@ -179,7 +199,7 @@ function LeftPanel({ drawer = false }: { drawer?: boolean }) {
     <aside className={`${drawer ? 'drawer-panel' : 'left-panel panel-surface'}`}>
       <PrimitivePalette />
       <SceneOutliner />
-      <div className="agent-note"><Sparkles /><div><strong>Build with an agent</strong><span>Ask Codex to add or refine any object in this live scene.</span></div></div>
+      <div className="agent-note"><Sparkles /><div><strong>Agent-native modeling</strong><span>Ask for precise dimensions, PBR finishes, or Boolean cuts. Every transaction stays reversible.</span></div></div>
     </aside>
   );
 }
@@ -203,14 +223,96 @@ function VectorEditor({ label, field, value, objectId }: { label: string; field:
   );
 }
 
-function MaterialSlider({ label, value, onCommit }: { label: string; value: number; onCommit: (value: number) => void }) {
+function MaterialSlider({ label, value, onCommit, min = 0, max = 1 }: { label: string; value: number; onCommit: (value: number) => void; min?: number; max?: number }) {
   const [local, setLocal] = useState(value);
   return (
     <div className="real-slider-line">
       <span>{label}</span>
-      <Slider min={0} max={1} step={0.01} value={[local]} onValueChange={(values) => setLocal(Array.isArray(values) ? values[0] : values)} onValueCommitted={(values) => onCommit(Array.isArray(values) ? values[0] : values)} />
+      <Slider min={min} max={max} step={0.01} value={[local]} onValueChange={(values) => setLocal(Array.isArray(values) ? values[0] : values)} onValueCommitted={(values) => onCommit(Array.isArray(values) ? values[0] : values)} />
       <b>{local.toFixed(2)}</b>
     </div>
+  );
+}
+
+const geometryFields: Record<PrimitiveType, Array<{ key: keyof PrimitiveGeometry; label: string; step: number }>> = {
+  box: [
+    { key: 'width', label: 'Width', step: 0.1 },
+    { key: 'height', label: 'Height', step: 0.1 },
+    { key: 'depth', label: 'Depth', step: 0.1 },
+  ],
+  sphere: [
+    { key: 'radius', label: 'Radius', step: 0.05 },
+    { key: 'radialSegments', label: 'Segments', step: 1 },
+  ],
+  cylinder: [
+    { key: 'radiusTop', label: 'Top radius', step: 0.05 },
+    { key: 'radiusBottom', label: 'Bottom radius', step: 0.05 },
+    { key: 'height', label: 'Height', step: 0.1 },
+    { key: 'radialSegments', label: 'Segments', step: 1 },
+  ],
+  cone: [
+    { key: 'radiusTop', label: 'Top radius', step: 0.05 },
+    { key: 'radiusBottom', label: 'Bottom radius', step: 0.05 },
+    { key: 'height', label: 'Height', step: 0.1 },
+    { key: 'radialSegments', label: 'Segments', step: 1 },
+  ],
+  torus: [
+    { key: 'radius', label: 'Major radius', step: 0.05 },
+    { key: 'tube', label: 'Tube radius', step: 0.05 },
+    { key: 'radialSegments', label: 'Segments', step: 1 },
+  ],
+};
+
+function GeometryInspector({ object }: { object: StudioObject }) {
+  const execute = useStudioStore((state) => state.execute);
+  if (!isPrimitiveType(object.type) || !object.geometry) return null;
+  return (
+    <div className="inspector-block">
+      <div className="section-heading"><p className="eyebrow">GEOMETRY</p><span>Parametric</span></div>
+      <div className="geometry-field-grid">
+        {geometryFields[object.type].map((field) => (
+          <label key={`${object.id}-${field.key}-${object.geometry![field.key]}`}>
+            <span>{field.label}</span>
+            <input
+              type="number"
+              min={field.key.includes('Segments') ? 3 : 0.01}
+              max={field.key.includes('Segments') ? 256 : 1000}
+              step={field.step}
+              defaultValue={object.geometry![field.key]}
+              onBlur={(event) => {
+                const value = Number(event.currentTarget.value);
+                if (Number.isFinite(value)) execute({ type: 'set_geometry', objectId: object.id, geometry: { [field.key]: value } });
+              }}
+            />
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function TextureControl({ object, slot, label }: { object: StudioObject; slot: 'baseColorTexture' | 'normalTexture' | 'roughnessTexture' | 'metalnessTexture'; label: string }) {
+  const input = useRef<HTMLInputElement>(null);
+  const execute = useStudioStore((state) => state.execute);
+  const setError = useStudioStore((state) => state.setError);
+  const attached = Boolean(object.material[slot]);
+  const onTexture = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    try {
+      execute({ type: 'set_material', objectId: object.id, material: { [slot]: await imageFileToDataUrl(file) } });
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'The texture could not be applied.');
+    }
+  };
+  return (
+    <>
+      <input ref={input} className="sr-only" type="file" accept="image/png,image/jpeg,image/webp" onChange={onTexture} />
+      <button type="button" className={`texture-control ${attached ? 'attached' : ''}`} onClick={() => input.current?.click()}>
+        <ImagePlus /><span>{label}</span><b>{attached ? 'REPLACE' : 'ADD'}</b>
+      </button>
+    </>
   );
 }
 
@@ -225,7 +327,9 @@ function ObjectInspector({ object }: { object: StudioObject }) {
           <p className="eyebrow">INSPECTOR</p>
           <Input className="object-name-input" defaultValue={object.name} key={`${object.id}-${object.name}`} onBlur={(event) => event.currentTarget.value.trim() !== object.name && execute({ type: 'rename', objectId: object.id, name: event.currentTarget.value })} aria-label="Object name" />
         </div>
-        <span className="object-chip">{object.type.toUpperCase()}</span>
+        <button className="object-chip visibility-chip" type="button" onClick={() => execute({ type: 'set_visibility', objectId: object.id, visible: !object.visible })}>
+          {object.visible ? <Eye /> : <EyeOff />} {object.type === 'glb_node' ? object.assetNodeKind?.toUpperCase() : object.type.toUpperCase()}
+        </button>
       </div>
       <div className="inspector-block">
         <p className="eyebrow">TRANSFORM</p>
@@ -233,15 +337,27 @@ function ObjectInspector({ object }: { object: StudioObject }) {
         <VectorEditor label="Rotation" field="rotation" value={object.rotation} objectId={object.id} />
         <VectorEditor label="Scale" field="scale" value={object.scale} objectId={object.id} />
       </div>
+      <GeometryInspector object={object} />
       {object.type !== 'group' && object.type !== 'glb' && (
         <div className="inspector-block">
-          <div className="section-heading"><p className="eyebrow">MATERIAL</p><span>Standard</span></div>
+          <div className="section-heading"><p className="eyebrow">MATERIAL</p><span>PBR</span></div>
           <label className="material-color">
             <input type="color" value={object.material.color} onChange={(event) => execute({ type: 'set_material', objectId: object.id, material: { color: event.target.value } })} />
             <span>Base color</span><code>{object.material.color.toUpperCase()}</code>
           </label>
           <MaterialSlider key={`${object.id}-roughness-${object.material.roughness}`} label="Roughness" value={object.material.roughness} onCommit={(roughness) => execute({ type: 'set_material', objectId: object.id, material: { roughness } })} />
           <MaterialSlider key={`${object.id}-metalness-${object.material.metalness}`} label="Metalness" value={object.material.metalness} onCommit={(metalness) => execute({ type: 'set_material', objectId: object.id, material: { metalness } })} />
+          <MaterialSlider key={`${object.id}-opacity-${object.material.opacity}`} label="Opacity" value={object.material.opacity} onCommit={(opacity) => execute({ type: 'set_material', objectId: object.id, material: { opacity } })} />
+          <label className="material-color">
+            <input type="color" value={object.material.emissive} onChange={(event) => execute({ type: 'set_material', objectId: object.id, material: { emissive: event.target.value, emissiveIntensity: Math.max(0.35, object.material.emissiveIntensity) } })} />
+            <span>Emission</span><code>{object.material.emissive.toUpperCase()}</code>
+          </label>
+          <div className="texture-grid">
+            <TextureControl object={object} slot="baseColorTexture" label="Base color" />
+            <TextureControl object={object} slot="normalTexture" label="Normal" />
+            <TextureControl object={object} slot="roughnessTexture" label="Roughness" />
+            <TextureControl object={object} slot="metalnessTexture" label="Metalness" />
+          </div>
         </div>
       )}
       <div className="inspector-actions">
@@ -255,7 +371,7 @@ function ObjectInspector({ object }: { object: StudioObject }) {
 
 function ActivityFeed() {
   const activity = useStudioStore((state) => state.activity);
-  const now = Date.now();
+  const [now] = useState(() => Date.now());
   return (
     <div className="activity-feed">
       {activity.map((item) => {
@@ -267,6 +383,44 @@ function ActivityFeed() {
   );
 }
 
+const environments: Array<{ value: EnvironmentPreset; label: string }> = [
+  { value: 'studio', label: 'Studio' },
+  { value: 'sunset', label: 'Sunset' },
+  { value: 'warehouse', label: 'Warehouse' },
+  { value: 'night', label: 'Night' },
+];
+
+function SceneInspector() {
+  const settings = useStudioStore((state) => state.doc.settings);
+  const execute = useStudioStore((state) => state.execute);
+  return (
+    <div className="scene-inspector">
+      <div className="inspector-heading"><div><p className="eyebrow">SCENE</p><strong>Lighting & output</strong></div><span className="object-chip"><SunMedium /> PBR</span></div>
+      <div className="inspector-block">
+        <div className="section-heading"><p className="eyebrow">ENVIRONMENT</p><span>HDRI</span></div>
+        <div className="environment-grid">
+          {environments.map((environment) => (
+            <button key={environment.value} className={settings.environment === environment.value ? 'active' : ''} type="button" onClick={() => execute({ type: 'set_environment', environment: environment.value })}>
+              <span />{environment.label}
+            </button>
+          ))}
+        </div>
+        <MaterialSlider key={`exposure-${settings.exposure}`} label="Exposure" value={settings.exposure} min={0.1} max={3} onCommit={(exposure) => execute({ type: 'set_environment', exposure })} />
+        <label className="material-color">
+          <input type="color" value={settings.backgroundColor} onChange={(event) => execute({ type: 'set_environment', backgroundColor: event.target.value })} />
+          <span>Background</span><code>{settings.backgroundColor.toUpperCase()}</code>
+        </label>
+        <button className={`shadow-toggle ${settings.shadows ? 'active' : ''}`} type="button" onClick={() => execute({ type: 'set_environment', shadows: !settings.shadows })}>
+          <Check /> Cast scene shadows
+        </button>
+      </div>
+      <div className="scene-output-card">
+        <ImageDown /><div><strong>Presentation render</strong><span>Export a 2× PNG from the current camera through the Export menu.</span></div>
+      </div>
+    </div>
+  );
+}
+
 function RightPanel({ drawer = false }: { drawer?: boolean }) {
   const objects = useStudioStore((state) => state.doc.objects);
   const selection = useStudioStore((state) => state.selection);
@@ -274,8 +428,9 @@ function RightPanel({ drawer = false }: { drawer?: boolean }) {
   return (
     <aside className={`${drawer ? 'drawer-panel' : 'right-panel panel-surface'}`}>
       <Tabs defaultValue="object" className="inspector-tabs">
-        <TabsList variant="line" className="inspector-tabs-list"><TabsTrigger value="object"><SlidersHorizontal /> Object</TabsTrigger><TabsTrigger value="activity"><Sparkles /> Activity</TabsTrigger></TabsList>
+        <TabsList variant="line" className="inspector-tabs-list"><TabsTrigger value="object"><SlidersHorizontal /> Object</TabsTrigger><TabsTrigger value="scene"><SunMedium /> Scene</TabsTrigger><TabsTrigger value="activity"><Sparkles /> Activity</TabsTrigger></TabsList>
         <TabsContent value="object">{object ? <ObjectInspector object={object} /> : <div className="inspector-empty"><MousePointer2 /><strong>Select an object</strong><span>Choose a shape in the canvas or scene list to inspect it.</span></div>}</TabsContent>
+        <TabsContent value="scene"><SceneInspector /></TabsContent>
         <TabsContent value="activity"><div className="activity-block"><div className="section-heading"><p className="eyebrow">ACTIVITY</p><span>Live</span></div><ActivityFeed /></div></TabsContent>
       </Tabs>
     </aside>
@@ -328,7 +483,7 @@ function Viewport() {
         <button className={snap ? 'active-subtle' : ''} type="button" onClick={() => setSnap(!snap)} aria-label="Toggle grid snapping"><Grid3X3 /><kbd>SNAP</kbd></button>
       </div>
       <div className="camera-presets"><button onClick={() => setCameraPreset('top')}>TOP</button><button onClick={() => setCameraPreset('front')}>FRONT</button><button onClick={() => setCameraPreset('iso')}>ISO</button></div>
-      <div className="agent-pulse"><Sparkles /><span><strong>{webmcpStatus === 'ready' ? 'Agent ready' : 'Shared scene'}</strong> · Select a shape or ask for a change</span></div>
+      <div className="agent-pulse"><Sparkles /><span><strong>{webmcpStatus === 'ready' ? 'Agent ready' : 'Shared scene'}</strong> · Try “cut the sphere from the selected box”</span></div>
     </div>
   );
 }

@@ -66,4 +66,41 @@ describe('scene command store', () => {
     invalid.objects[0].parentId = 'missing-parent';
     expect(() => validateSceneDocument(invalid)).toThrow(/Parent object/);
   });
+
+  it('refines parametric geometry and scene lighting through reversible commands', () => {
+    useStudioStore.getState().execute({ type: 'set_geometry', objectId: 'lamp-shade', geometry: { height: 1.8, radialSegments: 48 } });
+    useStudioStore.getState().execute({ type: 'set_environment', environment: 'sunset', exposure: 1.35, shadows: false });
+    const state = useStudioStore.getState();
+    expect(state.doc.objects.find((object) => object.id === 'lamp-shade')?.geometry?.height).toBe(1.8);
+    expect(state.doc.settings).toMatchObject({ environment: 'sunset', exposure: 1.35, shadows: false });
+    state.undo();
+    expect(useStudioStore.getState().doc.settings.environment).toBe('studio');
+  });
+
+  it('creates a non-destructive Boolean feature and restores its operands on delete', () => {
+    const result = useStudioStore.getState().execute({ type: 'boolean', operation: 'union', operandIds: ['lamp-base', 'lamp-lower-arm'], name: 'Joined base' });
+    const feature = useStudioStore.getState().doc.objects.find((object) => object.id === result.objectIds[0]);
+    expect(feature?.boolean).toEqual({ operation: 'union', operandIds: ['lamp-base', 'lamp-lower-arm'] });
+    expect(useStudioStore.getState().doc.objects.find((object) => object.id === 'lamp-base')?.visible).toBe(false);
+    useStudioStore.getState().execute({ type: 'delete', objectId: feature!.id });
+    expect(useStudioStore.getState().doc.objects.find((object) => object.id === 'lamp-base')?.visible).toBe(true);
+  });
+
+  it('previews without mutation and applies a transaction as one revision and undo step', () => {
+    const state = useStudioStore.getState();
+    const revision = state.doc.revision;
+    const preview = state.previewTransaction([
+      { type: 'set_geometry', objectId: 'lamp-shade', geometry: { height: 2 } },
+      { type: 'set_material', objectId: 'lamp-shade', material: { color: '#2255aa' } },
+    ]);
+    expect(preview.revision).toBe(revision);
+    expect(useStudioStore.getState().doc.revision).toBe(revision);
+    useStudioStore.getState().executeTransaction([
+      { type: 'set_geometry', objectId: 'lamp-shade', geometry: { height: 2 } },
+      { type: 'set_material', objectId: 'lamp-shade', material: { color: '#2255aa' } },
+    ], 'agent', 'Refined lamp shade');
+    expect(useStudioStore.getState().doc.revision).toBe(revision + 1);
+    expect(useStudioStore.getState().history).toHaveLength(1);
+    expect(useStudioStore.getState().activity[0]).toMatchObject({ actor: 'agent', label: 'Refined lamp shade' });
+  });
 });

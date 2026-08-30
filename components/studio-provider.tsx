@@ -57,7 +57,8 @@ export function StudioProvider({ children }: { children: ReactNode }) {
       const key = event.key.toLowerCase();
       if (modifier && key === 'z') {
         event.preventDefault();
-        event.shiftKey ? state.redo() : state.undo();
+        if (event.shiftKey) state.redo();
+        else state.undo();
       } else if (modifier && key === 'y') {
         event.preventDefault(); state.redo();
       } else if (modifier && key === 'd' && state.selection.length === 1) {

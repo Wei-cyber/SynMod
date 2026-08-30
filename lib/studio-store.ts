@@ -6,11 +6,14 @@ import { create } from 'zustand';
 import {
   createId,
   createLampStudy,
+  DEFAULT_GEOMETRY,
   DEFAULT_MATERIAL,
+  isPrimitiveType,
   makeObject,
   PRIMITIVE_LABELS,
   type ActivityEntry,
   type Actor,
+  type PrimitiveGeometry,
   type SceneCommand,
   type SceneDocument,
   type StudioMaterial,
@@ -21,6 +24,14 @@ import {
 
 type WebMcpStatus = 'checking' | 'ready' | 'unavailable' | 'error';
 type SaveState = 'saved' | 'saving' | 'error';
+
+export interface TransactionPreview {
+  revision: number;
+  summary: string;
+  labels: string[];
+  affectedObjectIds: string[];
+  objects: StudioObject[];
+}
 
 interface StudioState {
   doc: SceneDocument;
@@ -37,6 +48,8 @@ interface StudioState {
   cameraRequest: { token: number; preset: 'iso' | 'front' | 'top' } | null;
   error: string | null;
   execute: (command: SceneCommand, actor?: Actor) => { objectIds: string[]; label: string };
+  previewTransaction: (commands: SceneCommand[]) => TransactionPreview;
+  executeTransaction: (commands: SceneCommand[], actor?: Actor, label?: string) => { objectIds: string[]; label: string };
   select: (objectIds: string[], actor?: Actor) => void;
   focus: (objectIds: string[], actor?: Actor) => void;
   undo: (actor?: Actor) => boolean;
@@ -65,13 +78,45 @@ function finiteVec(value: Vec3, label: string, positive = false): Vec3 {
   return [...value] as Vec3;
 }
 
+function normalizeGeometry(base: PrimitiveGeometry, patch: Partial<PrimitiveGeometry>): PrimitiveGeometry {
+  const clean = Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined)) as Partial<PrimitiveGeometry>;
+  const next = { ...base, ...clean };
+  const dimensions = [next.width, next.height, next.depth, next.radius, next.radiusTop, next.radiusBottom, next.tube];
+  if (dimensions.some((value) => !Number.isFinite(value) || value <= 0 || value > 1000)) {
+    throw new Error('Geometry dimensions must be finite, greater than 0, and no more than 1000.');
+  }
+  if (!Number.isInteger(next.radialSegments) || next.radialSegments < 3 || next.radialSegments > 256) {
+    throw new Error('Radial segments must be an integer from 3 to 256.');
+  }
+  if (!Number.isInteger(next.heightSegments) || next.heightSegments < 1 || next.heightSegments > 128) {
+    throw new Error('Height segments must be an integer from 1 to 128.');
+  }
+  if (next.tube >= next.radius) throw new Error('Torus tube radius must be smaller than its major radius.');
+  return next;
+}
+
+function validateTexture(value: string | undefined, label: string) {
+  if (value === undefined) return;
+  if (!value.startsWith('data:image/')) throw new Error(`${label} must be an embedded image.`);
+  if (value.length > 8_000_000) throw new Error(`${label} is too large. Use an image under 6 MB.`);
+}
+
 function normalizeMaterial(base: StudioMaterial, patch: Partial<StudioMaterial>): StudioMaterial {
   const clean = Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined)) as Partial<StudioMaterial>;
   const next = { ...base, ...clean };
-  if (!/^#[0-9a-f]{6}$/i.test(next.color)) throw new Error('Color must be a six-digit hex value.');
-  if (![next.roughness, next.metalness].every((value) => Number.isFinite(value) && value >= 0 && value <= 1)) {
-    throw new Error('Roughness and metalness must be between 0 and 1.');
+  if (!/^#[0-9a-f]{6}$/i.test(next.color) || !/^#[0-9a-f]{6}$/i.test(next.emissive)) {
+    throw new Error('Material colors must be six-digit hex values.');
   }
+  if (![next.roughness, next.metalness, next.opacity, next.emissiveIntensity].every((value) => Number.isFinite(value))) {
+    throw new Error('Material values must be finite.');
+  }
+  if (next.roughness < 0 || next.roughness > 1 || next.metalness < 0 || next.metalness > 1 || next.opacity < 0 || next.opacity > 1 || next.emissiveIntensity < 0 || next.emissiveIntensity > 10) {
+    throw new Error('Material values are outside their supported range.');
+  }
+  validateTexture(next.baseColorTexture, 'Base color texture');
+  validateTexture(next.normalTexture, 'Normal texture');
+  validateTexture(next.roughnessTexture, 'Roughness texture');
+  validateTexture(next.metalnessTexture, 'Metalness texture');
   return next;
 }
 
@@ -110,7 +155,7 @@ function defaultOffset(): Vec3 {
   return [0.45, 0.15, 0.45];
 }
 
-function perform(doc: SceneDocument, command: SceneCommand) {
+export function applySceneCommand(doc: SceneDocument, command: SceneCommand) {
   const affected: string[] = [];
   let label = 'Updated scene';
 
@@ -120,6 +165,7 @@ function perform(doc: SceneDocument, command: SceneCommand) {
         position: command.position ? finiteVec(command.position, 'Position') : [0, 0.5, 0],
         rotation: command.rotation ? finiteVec(command.rotation, 'Rotation') : [0, 0, 0],
         scale: command.scale ? finiteVec(command.scale, 'Scale', true) : [1, 1, 1],
+        geometry: normalizeGeometry({ ...DEFAULT_GEOMETRY, ...(command.primitiveType === 'cone' ? { radiusTop: 0.02 } : {}) }, command.geometry ?? {}),
         material: normalizeMaterial(DEFAULT_MATERIAL, command.material ?? {}),
       });
       doc.objects.push(object);
@@ -129,17 +175,36 @@ function perform(doc: SceneDocument, command: SceneCommand) {
     }
     case 'import_glb': {
       if (!command.assetDataUrl.startsWith('data:model/gltf-binary;base64,')) throw new Error('Imported GLB data is invalid.');
-      const object = makeObject('glb', command.name.trim() || 'Imported model', {
+      const root = makeObject('glb', command.name.trim() || 'Imported model', {
         assetDataUrl: command.assetDataUrl,
         position: [0, 0, 0],
       });
-      doc.objects.push(object);
-      affected.push(object.id);
-      label = `Imported ${object.name}`;
+      doc.objects.push(root);
+      const nodeIdByIndex = new Map<number, string>();
+      for (const descriptor of command.nodes ?? []) {
+        const id = createId('asset-node');
+        nodeIdByIndex.set(descriptor.nodeIndex, id);
+        const node = makeObject('glb_node', descriptor.name, {
+          id,
+          parentId: descriptor.parentNodeIndex === null ? root.id : nodeIdByIndex.get(descriptor.parentNodeIndex) ?? root.id,
+          position: finiteVec(descriptor.position, 'Imported node position'),
+          rotation: finiteVec(descriptor.rotation, 'Imported node rotation'),
+          scale: finiteVec(descriptor.scale, 'Imported node scale', true),
+          material: normalizeMaterial(DEFAULT_MATERIAL, descriptor.material ?? {}),
+          visible: descriptor.visible,
+          assetRootId: root.id,
+          assetNodeIndex: descriptor.nodeIndex,
+          assetNodeKind: descriptor.kind,
+        });
+        doc.objects.push(node);
+      }
+      affected.push(root.id, ...nodeIdByIndex.values());
+      label = `Imported ${root.name} with ${nodeIdByIndex.size} editable node${nodeIdByIndex.size === 1 ? '' : 's'}`;
       break;
     }
     case 'set_transform': {
       const object = objectById(doc, command.objectId);
+      if (object.locked) throw new Error(`${object.name} is locked.`);
       if (!command.position && !command.rotation && !command.scale) throw new Error('At least one transform value is required.');
       if (command.position) object.position = finiteVec(command.position, 'Position');
       if (command.rotation) object.rotation = finiteVec(command.rotation, 'Rotation');
@@ -148,12 +213,71 @@ function perform(doc: SceneDocument, command: SceneCommand) {
       label = `Transformed ${object.name}`;
       break;
     }
+    case 'set_geometry': {
+      const object = objectById(doc, command.objectId);
+      if (!isPrimitiveType(object.type) || !object.geometry) throw new Error('Only primitives expose editable geometry parameters.');
+      if (!Object.values(command.geometry).some((value) => value !== undefined)) throw new Error('Provide at least one geometry parameter.');
+      object.geometry = normalizeGeometry(object.geometry, command.geometry);
+      affected.push(object.id);
+      label = `Refined ${object.name} geometry`;
+      break;
+    }
     case 'set_material': {
       const object = objectById(doc, command.objectId);
       if (object.type === 'group' || object.type === 'glb') throw new Error('This object does not expose an editable material.');
+      if (!Object.values(command.material).some((value) => value !== undefined)) throw new Error('Provide at least one material property.');
       object.material = normalizeMaterial(object.material, command.material);
       affected.push(object.id);
       label = `Updated ${object.name} material`;
+      break;
+    }
+    case 'set_visibility': {
+      const object = objectById(doc, command.objectId);
+      object.visible = command.visible;
+      affected.push(object.id);
+      label = `${command.visible ? 'Showed' : 'Hid'} ${object.name}`;
+      break;
+    }
+    case 'set_snap': {
+      doc.settings.snapEnabled = command.enabled;
+      label = `${command.enabled ? 'Enabled' : 'Disabled'} transform snapping`;
+      break;
+    }
+    case 'set_environment': {
+      if (command.environment === undefined && command.exposure === undefined && command.backgroundColor === undefined && command.shadows === undefined) throw new Error('Provide at least one environment property.');
+      if (command.environment) doc.settings.environment = command.environment;
+      if (command.exposure !== undefined) {
+        if (!Number.isFinite(command.exposure) || command.exposure < 0.1 || command.exposure > 3) throw new Error('Exposure must be between 0.1 and 3.');
+        doc.settings.exposure = command.exposure;
+      }
+      if (command.backgroundColor !== undefined) {
+        if (!/^#[0-9a-f]{6}$/i.test(command.backgroundColor)) throw new Error('Background color must be a six-digit hex value.');
+        doc.settings.backgroundColor = command.backgroundColor;
+      }
+      if (command.shadows !== undefined) doc.settings.shadows = command.shadows;
+      label = 'Updated scene environment';
+      break;
+    }
+    case 'boolean': {
+      const [leftId, rightId] = command.operandIds;
+      if (leftId === rightId) throw new Error('Boolean operands must be different objects.');
+      const left = objectById(doc, leftId);
+      const right = objectById(doc, rightId);
+      if (![left, right].every((item) => isPrimitiveType(item.type) || item.type === 'boolean')) {
+        throw new Error('Boolean operations currently support primitives and Boolean results.');
+      }
+      if (left.parentId !== right.parentId) throw new Error('Boolean operands must share the same parent.');
+      const result = makeObject('boolean', command.name?.trim() || `${left.name} ${command.operation}`, {
+        position: [0, 0, 0],
+        parentId: left.parentId,
+        material: left.material,
+        boolean: { operation: command.operation, operandIds: [left.id, right.id] },
+      });
+      left.visible = false;
+      right.visible = false;
+      doc.objects.push(result);
+      affected.push(result.id, left.id, right.id);
+      label = `Created ${command.operation} result from ${left.name} and ${right.name}`;
       break;
     }
     case 'rename': {
@@ -180,6 +304,8 @@ function perform(doc: SceneDocument, command: SceneCommand) {
         const copy = structuredClone(item);
         copy.id = idMap.get(item.id)!;
         copy.parentId = item.parentId && subtree.has(item.parentId) ? idMap.get(item.parentId)! : item.parentId;
+        if (copy.assetRootId && idMap.has(copy.assetRootId)) copy.assetRootId = idMap.get(copy.assetRootId)!;
+        if (copy.boolean) copy.boolean.operandIds = copy.boolean.operandIds.map((id) => idMap.get(id) ?? id) as [string, string];
         if (item.id === source.id) {
           copy.name = command.name?.trim() || `${item.name} copy`;
           copy.position = item.position.map((value, index) => value + offset[index]) as Vec3;
@@ -193,6 +319,12 @@ function perform(doc: SceneDocument, command: SceneCommand) {
     }
     case 'delete': {
       const source = objectById(doc, command.objectId);
+      if (source.boolean) {
+        source.boolean.operandIds.forEach((id) => {
+          const operand = doc.objects.find((item) => item.id === id);
+          if (operand) operand.visible = true;
+        });
+      }
       const remove = new Set([source.id]);
       let changed = true;
       while (changed) {
@@ -242,9 +374,16 @@ function perform(doc: SceneDocument, command: SceneCommand) {
     }
   }
 
-  doc.revision += 1;
-  doc.updatedAt = new Date().toISOString();
   return { objectIds: affected, label };
+}
+
+function finishMutation(doc: SceneDocument, revision: number) {
+  doc.revision = revision + 1;
+  doc.updatedAt = new Date().toISOString();
+}
+
+function unique(values: string[]) {
+  return [...new Set(values)];
 }
 
 export const useStudioStore = create<StudioState>((set, get) => ({
@@ -268,24 +407,61 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     const current = get();
     const before = cloneDoc(current.doc);
     const next = cloneDoc(current.doc);
-    const result = perform(next, command);
+    const result = applySceneCommand(next, command);
+    finishMutation(next, current.doc.revision);
+    const selection = result.objectIds.filter((id) => next.objects.some((object) => object.id === id)).slice(0, 1);
     set({
       doc: next,
       history: [...current.history, before].slice(-100),
       future: [],
-      selection: result.objectIds.filter((id) => next.objects.some((object) => object.id === id)).slice(0, 1),
-      activity: [activity(actor, result.label, result.objectIds), ...current.activity].slice(0, 60),
+      selection,
+      activity: [activity(actor, result.label, result.objectIds), ...current.activity].slice(0, 80),
       lastAgentChange: actor === 'agent' ? { token: Date.now(), objectIds: result.objectIds } : current.lastAgentChange,
       saveState: 'saving',
       error: null,
     });
     return result;
   },
+  previewTransaction(commands) {
+    if (!commands.length || commands.length > 20) throw new Error('A transaction must contain between 1 and 20 operations.');
+    const state = get();
+    const next = cloneDoc(state.doc);
+    const results = commands.map((command) => applySceneCommand(next, command));
+    const affectedObjectIds = unique(results.flatMap((result) => result.objectIds));
+    return {
+      revision: state.doc.revision,
+      summary: `Previewed ${commands.length} operation${commands.length === 1 ? '' : 's'} without changing the scene`,
+      labels: results.map((result) => result.label),
+      affectedObjectIds,
+      objects: affectedObjectIds.map((id) => next.objects.find((object) => object.id === id)).filter(Boolean) as StudioObject[],
+    };
+  },
+  executeTransaction(commands, actor = 'human', label) {
+    if (!commands.length || commands.length > 20) throw new Error('A transaction must contain between 1 and 20 operations.');
+    const current = get();
+    const before = cloneDoc(current.doc);
+    const next = cloneDoc(current.doc);
+    const results = commands.map((command) => applySceneCommand(next, command));
+    const objectIds = unique(results.flatMap((result) => result.objectIds));
+    const resultLabel = label?.trim().slice(0, 120) || `Applied ${commands.length} scene operation${commands.length === 1 ? '' : 's'}`;
+    finishMutation(next, current.doc.revision);
+    set({
+      doc: next,
+      history: [...current.history, before].slice(-100),
+      future: [],
+      selection: objectIds.filter((id) => next.objects.some((object) => object.id === id)).slice(0, 1),
+      activity: [activity(actor, resultLabel, objectIds), ...current.activity].slice(0, 80),
+      lastAgentChange: actor === 'agent' ? { token: Date.now(), objectIds } : current.lastAgentChange,
+      saveState: 'saving',
+      error: null,
+    });
+    return { objectIds, label: resultLabel };
+  },
   select(objectIds, actor = 'human') {
     const valid = [...new Set(objectIds)].filter((id) => get().doc.objects.some((object) => object.id === id));
     set((state) => ({
       selection: valid,
-      activity: actor === 'agent' ? [activity(actor, `Selected ${valid.length || 'no'} object${valid.length === 1 ? '' : 's'}`, valid), ...state.activity].slice(0, 60) : state.activity,
+      activity: actor === 'agent' ? [activity(actor, `Selected ${valid.length || 'no'} object${valid.length === 1 ? '' : 's'}`, valid), ...state.activity].slice(0, 80) : state.activity,
     }));
   },
   focus(objectIds, actor = 'human') {
@@ -293,7 +469,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     if (!valid.length) throw new Error('No valid objects to focus.');
     set((state) => ({
       focusRequest: { token: Date.now(), objectIds: valid },
-      activity: actor === 'agent' ? [activity(actor, 'Focused the viewport', valid), ...state.activity].slice(0, 60) : state.activity,
+      activity: actor === 'agent' ? [activity(actor, 'Focused the viewport', valid), ...state.activity].slice(0, 80) : state.activity,
     }));
   },
   undo(actor = 'human') {
@@ -301,14 +477,13 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     const previous = state.history.at(-1);
     if (!previous) return false;
     const restored = cloneDoc(previous);
-    restored.revision = state.doc.revision + 1;
-    restored.updatedAt = new Date().toISOString();
+    finishMutation(restored, state.doc.revision);
     set({
       doc: restored,
       history: state.history.slice(0, -1),
       future: [cloneDoc(state.doc), ...state.future].slice(0, 100),
       selection: state.selection.filter((id) => restored.objects.some((item) => item.id === id)),
-      activity: [activity(actor, 'Undid scene change', []), ...state.activity].slice(0, 60),
+      activity: [activity(actor, 'Undid scene change', []), ...state.activity].slice(0, 80),
       saveState: 'saving',
     });
     return true;
@@ -318,14 +493,13 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     const next = state.future[0];
     if (!next) return false;
     const restored = cloneDoc(next);
-    restored.revision = state.doc.revision + 1;
-    restored.updatedAt = new Date().toISOString();
+    finishMutation(restored, state.doc.revision);
     set({
       doc: restored,
       history: [...state.history, cloneDoc(state.doc)].slice(-100),
       future: state.future.slice(1),
       selection: state.selection.filter((id) => restored.objects.some((item) => item.id === id)),
-      activity: [activity(actor, 'Redid scene change', []), ...state.activity].slice(0, 60),
+      activity: [activity(actor, 'Redid scene change', []), ...state.activity].slice(0, 80),
       saveState: 'saving',
     });
     return true;
@@ -340,14 +514,13 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       selection: [],
       history: [...state.history, cloneDoc(state.doc)].slice(-100),
       future: [],
-      activity: [activity('human', label, doc.objects.map((item) => item.id)), ...state.activity].slice(0, 60),
+      activity: [activity('human', label, doc.objects.map((item) => item.id)), ...state.activity].slice(0, 80),
       saveState: 'saving',
     });
   },
   setToolMode(toolMode) { set({ toolMode }); },
   setSnapEnabled(enabled) {
-    const state = get();
-    set({ doc: { ...state.doc, settings: { ...state.doc.settings, snapEnabled: enabled } }, saveState: 'saving' });
+    get().execute({ type: 'set_snap', enabled });
   },
   setCameraPreset(preset) { set({ cameraRequest: { token: Date.now(), preset } }); },
   setWebMcpStatus(webmcpStatus) { set({ webmcpStatus }); },
@@ -358,4 +531,26 @@ export const useStudioStore = create<StudioState>((set, get) => ({
 export function getObjectSnapshot(objectId: string) {
   const object = useStudioStore.getState().doc.objects.find((item) => item.id === objectId);
   return object ? structuredClone(object) : null;
+}
+
+export function getSceneHealth(doc = useStudioStore.getState().doc) {
+  const warnings: string[] = [];
+  const hiddenObjects = doc.objects.filter((object) => !object.visible).length;
+  const texturedObjects = doc.objects.filter((object) => object.material.baseColorTexture || object.material.normalTexture || object.material.roughnessTexture || object.material.metalnessTexture).length;
+  const booleanObjects = doc.objects.filter((object) => object.type === 'boolean').length;
+  const importedNodes = doc.objects.filter((object) => object.type === 'glb_node').length;
+  if (hiddenObjects) warnings.push(`${hiddenObjects} hidden object${hiddenObjects === 1 ? '' : 's'} remain in the feature graph.`);
+  if (doc.objects.length > 350) warnings.push('The scene is approaching the recommended 500-object limit.');
+  if (doc.objects.some((object) => Math.max(...object.scale) > 100)) warnings.push('One or more objects use unusually large scale values.');
+  return {
+    revision: doc.revision,
+    objectCount: doc.objects.length,
+    visibleObjectCount: doc.objects.length - hiddenObjects,
+    hiddenObjectCount: hiddenObjects,
+    booleanObjectCount: booleanObjects,
+    importedNodeCount: importedNodes,
+    texturedObjectCount: texturedObjects,
+    warnings,
+    status: warnings.length ? 'review' : 'healthy',
+  };
 }

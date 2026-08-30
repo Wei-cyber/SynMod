@@ -28,6 +28,8 @@ describe('WebMCP tools', () => {
       'get_scene_summary', 'get_object', 'get_selection', 'add_primitive', 'set_object_transform',
       'set_object_material', 'rename_object', 'duplicate_object', 'delete_object', 'group_objects',
       'ungroup_object', 'select_objects', 'focus_objects', 'undo_scene_change', 'redo_scene_change',
+      'set_geometry_parameters', 'boolean_objects', 'set_scene_environment', 'inspect_scene_health',
+      'preview_scene_transaction', 'apply_scene_transaction',
     ]));
     expect(tools.find((tool) => tool.name === 'get_scene_summary')?.annotations?.readOnlyHint).toBe(true);
     expect(useStudioStore.getState().webmcpStatus).toBe('ready');
@@ -55,5 +57,23 @@ describe('WebMCP tools', () => {
     const transform = tools.find((tool) => tool.name === 'set_object_transform')!;
     expect(() => transform.execute({ object_id: 'lamp-shade', scale: [1, -1, 1] })).toThrow();
     expect(useStudioStore.getState().doc.revision).toBe(revision);
+  });
+
+  it('previews and applies an atomic agent transaction with revision protection', async () => {
+    const tools: CapturedTool[] = [];
+    Object.defineProperty(globalThis, 'document', { configurable: true, value: { modelContext: { registerTool: async (definition: CapturedTool) => { tools.push(definition); } } } });
+    await registerWebMcpTools();
+    const previewTool = tools.find((tool) => tool.name === 'preview_scene_transaction')!;
+    const applyTool = tools.find((tool) => tool.name === 'apply_scene_transaction')!;
+    const operations = [
+      { action: 'set_geometry', object_id: 'lamp-shade', geometry: { height: 1.7 } },
+      { action: 'set_material', object_id: 'lamp-shade', material: { color: '#cc5500' } },
+    ];
+    const preview = await previewTool.execute({ operations }) as { structuredContent: { revision: number } };
+    expect(useStudioStore.getState().doc.objects.find((object) => object.id === 'lamp-shade')?.geometry?.height).toBe(1);
+    const result = await applyTool.execute({ expected_revision: preview.structuredContent.revision, label: 'Warm shade refinement', operations }) as { structuredContent: { revision: number } };
+    expect(result.structuredContent.revision).toBe(preview.structuredContent.revision + 1);
+    expect(useStudioStore.getState().activity[0]).toMatchObject({ actor: 'agent', label: 'Warm shade refinement' });
+    expect(() => applyTool.execute({ expected_revision: preview.structuredContent.revision, operations })).toThrow(/Scene changed/);
   });
 });
