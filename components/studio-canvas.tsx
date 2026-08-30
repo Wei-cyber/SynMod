@@ -221,6 +221,7 @@ function SceneNode({ object, objects }: { object: StudioObject; objects: StudioO
   const pulse = useStudioStore((state) => state.lastAgentChange);
   const execute = useStudioStore((state) => state.execute);
   const select = useStudioStore((state) => state.select);
+  const readOnly = useStudioStore((state) => state.readOnly);
   const selected = selection.length === 1 && selection[0] === object.id;
   const pulsing = Boolean(pulse?.objectIds.includes(object.id));
   const children = objects.filter((item) => item.parentId === object.id);
@@ -260,7 +261,7 @@ function SceneNode({ object, objects }: { object: StudioObject; objects: StudioO
         <ObjectSurface object={object} objects={objects} selected={selection.includes(object.id)} pulsing={pulsing} selection={selection} />
         {children.map((child) => <SceneNode key={child.id} object={child} objects={objects} />)}
       </group>
-      {selected && !object.locked && node && (
+      {selected && !object.locked && !readOnly && node && (
         <TransformControls
           object={node}
           mode={toolMode}

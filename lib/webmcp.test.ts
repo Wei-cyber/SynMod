@@ -12,7 +12,7 @@ interface CapturedTool {
 
 describe('WebMCP tools', () => {
   beforeEach(() => {
-    useStudioStore.setState({ doc: createLampStudy(), selection: [], history: [], future: [], activity: [], webmcpStatus: 'checking' });
+    useStudioStore.setState({ doc: createLampStudy(), selection: [], history: [], future: [], activity: [], webmcpStatus: 'checking', readOnly: false });
   });
 
   it('registers the complete tool surface and unregisters through AbortSignal', async () => {
@@ -30,6 +30,8 @@ describe('WebMCP tools', () => {
       'ungroup_object', 'select_objects', 'focus_objects', 'undo_scene_change', 'redo_scene_change',
       'set_geometry_parameters', 'boolean_objects', 'set_scene_environment', 'inspect_scene_health',
       'preview_scene_transaction', 'apply_scene_transaction',
+      'get_feature_tree', 'get_project_versions', 'compare_checkpoint', 'create_checkpoint',
+      'restore_checkpoint', 'branch_project', 'duplicate_project', 'create_readonly_share_link',
     ]));
     expect(tools.find((tool) => tool.name === 'get_scene_summary')?.annotations?.readOnlyHint).toBe(true);
     expect(useStudioStore.getState().webmcpStatus).toBe('ready');
@@ -75,5 +77,19 @@ describe('WebMCP tools', () => {
     expect(result.structuredContent.revision).toBe(preview.structuredContent.revision + 1);
     expect(useStudioStore.getState().activity[0]).toMatchObject({ actor: 'agent', label: 'Warm shade refinement' });
     expect(() => applyTool.execute({ expected_revision: preview.structuredContent.revision, operations })).toThrow(/Scene changed/);
+  });
+
+  it('returns compact texture-safe objects and controls checkpoint history through tools', async () => {
+    const tools: CapturedTool[] = [];
+    const doc = createLampStudy();
+    doc.objects[0].material.baseColorTexture = 'data:image/png;base64,AAAA';
+    useStudioStore.setState({ doc, readOnly: false });
+    Object.defineProperty(globalThis, 'document', { configurable: true, value: { modelContext: { registerTool: async (definition: CapturedTool) => { tools.push(definition); } } } });
+    await registerWebMcpTools();
+    const summary = await tools.find((tool) => tool.name === 'get_scene_summary')!.execute({}) as { structuredContent: unknown };
+    expect(JSON.stringify(summary.structuredContent)).not.toContain('data:image');
+    const created = await tools.find((tool) => tool.name === 'create_checkpoint')!.execute({ name: 'Agent checkpoint' }) as { structuredContent: { checkpoints: Array<{ name: string }> } };
+    expect(created.structuredContent.checkpoints[0].name).toBe('Agent checkpoint');
+    expect(useStudioStore.getState().activity[0].actor).toBe('agent');
   });
 });

@@ -3,6 +3,8 @@
 import { Euler, MathUtils, Matrix4, Quaternion, Vector3 } from 'three';
 import { create } from 'zustand';
 
+import { analyzeScene, compareCheckpoint } from '@/lib/scene-analysis';
+import { makeEditableCopy } from '@/lib/share-links';
 import {
   createId,
   createLampStudy,
@@ -13,9 +15,11 @@ import {
   PRIMITIVE_LABELS,
   type ActivityEntry,
   type Actor,
+  type FeatureKind,
   type PrimitiveGeometry,
   type SceneCommand,
   type SceneDocument,
+  type SceneSnapshot,
   type StudioMaterial,
   type StudioObject,
   type ToolMode,
@@ -47,6 +51,7 @@ interface StudioState {
   focusRequest: { token: number; objectIds: string[] } | null;
   cameraRequest: { token: number; preset: 'iso' | 'front' | 'top' } | null;
   error: string | null;
+  readOnly: boolean;
   execute: (command: SceneCommand, actor?: Actor) => { objectIds: string[]; label: string };
   previewTransaction: (commands: SceneCommand[]) => TransactionPreview;
   executeTransaction: (commands: SceneCommand[], actor?: Actor, label?: string) => { objectIds: string[]; label: string };
@@ -54,8 +59,10 @@ interface StudioState {
   focus: (objectIds: string[], actor?: Actor) => void;
   undo: (actor?: Actor) => boolean;
   redo: (actor?: Actor) => boolean;
-  hydrate: (doc: SceneDocument | null) => void;
-  replaceDocument: (doc: SceneDocument, label?: string) => void;
+  hydrate: (doc: SceneDocument | null, readOnly?: boolean) => void;
+  replaceDocument: (doc: SceneDocument, label?: string, readOnly?: boolean) => void;
+  openDocument: (doc: SceneDocument, label?: string) => void;
+  createEditableCopy: (title?: string) => SceneDocument;
   setToolMode: (mode: ToolMode) => void;
   setSnapEnabled: (enabled: boolean) => void;
   setCameraPreset: (preset: 'iso' | 'front' | 'top') => void;
@@ -155,6 +162,52 @@ function defaultOffset(): Vec3 {
   return [0.45, 0.15, 0.45];
 }
 
+function snapshotFromDoc(doc: SceneDocument): SceneSnapshot {
+  return {
+    title: doc.title,
+    revision: doc.revision,
+    objects: structuredClone(doc.objects),
+    settings: structuredClone(doc.settings),
+    features: structuredClone(doc.features),
+  };
+}
+
+function commandFeatureKind(command: SceneCommand): FeatureKind {
+  switch (command.type) {
+    case 'add_primitive':
+    case 'import_glb': return 'source';
+    case 'set_transform': return 'transform';
+    case 'set_geometry': return 'geometry';
+    case 'set_material': return 'material';
+    case 'boolean': return 'boolean';
+    case 'group':
+    case 'ungroup':
+    case 'duplicate':
+    case 'delete':
+    case 'rename': return 'hierarchy';
+    case 'set_visibility': return 'visibility';
+    case 'set_snap':
+    case 'set_environment': return 'environment';
+    case 'create_checkpoint':
+    case 'restore_checkpoint':
+    case 'branch_project':
+    case 'duplicate_project': return 'version';
+  }
+}
+
+function recordFeature(doc: SceneDocument, command: SceneCommand, label: string, objectIds: string[], actor: Actor) {
+  doc.features.push({
+    id: createId('feature'),
+    kind: commandFeatureKind(command),
+    label,
+    objectIds: [...objectIds],
+    revision: doc.revision,
+    createdAt: doc.updatedAt,
+    actor,
+  });
+  doc.features = doc.features.slice(-5000);
+}
+
 export function applySceneCommand(doc: SceneDocument, command: SceneCommand) {
   const affected: string[] = [];
   let label = 'Updated scene';
@@ -195,6 +248,10 @@ export function applySceneCommand(doc: SceneDocument, command: SceneCommand) {
           assetRootId: root.id,
           assetNodeIndex: descriptor.nodeIndex,
           assetNodeKind: descriptor.kind,
+          triangleCount: descriptor.triangleCount,
+          topologyStatus: descriptor.topologyStatus,
+          nonManifoldEdgeCount: descriptor.nonManifoldEdgeCount,
+          missingMaterial: descriptor.missingMaterial,
         });
         doc.objects.push(node);
       }
@@ -372,6 +429,58 @@ export function applySceneCommand(doc: SceneDocument, command: SceneCommand) {
       label = `Ungrouped ${group.name}`;
       break;
     }
+    case 'create_checkpoint': {
+      const name = command.name.trim().slice(0, 80);
+      if (!name) throw new Error('Checkpoint name cannot be empty.');
+      const checkpoint = {
+        id: createId('checkpoint'),
+        name,
+        createdAt: new Date().toISOString(),
+        sourceRevision: doc.revision,
+        snapshot: snapshotFromDoc(doc),
+      };
+      doc.checkpoints.push(checkpoint);
+      doc.checkpoints = doc.checkpoints.slice(-100);
+      affected.push(...doc.objects.map((object) => object.id));
+      label = `Created checkpoint “${name}”`;
+      break;
+    }
+    case 'restore_checkpoint': {
+      const checkpoint = doc.checkpoints.find((item) => item.id === command.checkpointId);
+      if (!checkpoint) throw new Error(`Checkpoint not found: ${command.checkpointId}`);
+      doc.objects = structuredClone(checkpoint.snapshot.objects);
+      doc.settings = structuredClone(checkpoint.snapshot.settings);
+      doc.features = structuredClone(checkpoint.snapshot.features);
+      affected.push(...doc.objects.map((object) => object.id));
+      label = `Restored checkpoint “${checkpoint.name}”`;
+      break;
+    }
+    case 'branch_project': {
+      const parentProjectId = doc.projectId;
+      const checkpoint = command.checkpointId ? doc.checkpoints.find((item) => item.id === command.checkpointId) : undefined;
+      if (command.checkpointId && !checkpoint) throw new Error(`Checkpoint not found: ${command.checkpointId}`);
+      if (checkpoint) {
+        doc.objects = structuredClone(checkpoint.snapshot.objects);
+        doc.settings = structuredClone(checkpoint.snapshot.settings);
+        doc.features = structuredClone(checkpoint.snapshot.features);
+      }
+      const fallbackTitle = `${checkpoint?.snapshot.title ?? doc.title} branch`;
+      doc.projectId = createId('project');
+      doc.title = command.name?.trim().slice(0, 100) || fallbackTitle;
+      doc.branch = { parentProjectId, ...(checkpoint ? { checkpointId: checkpoint.id } : {}) };
+      affected.push(...doc.objects.map((object) => object.id));
+      label = `Branched project as “${doc.title}”`;
+      break;
+    }
+    case 'duplicate_project': {
+      const parentProjectId = doc.projectId;
+      doc.projectId = createId('project');
+      doc.title = command.name?.trim().slice(0, 100) || `${doc.title} copy`;
+      doc.branch = { parentProjectId };
+      affected.push(...doc.objects.map((object) => object.id));
+      label = `Duplicated project as “${doc.title}”`;
+      break;
+    }
   }
 
   return { objectIds: affected, label };
@@ -403,12 +512,15 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   focusRequest: null,
   cameraRequest: null,
   error: null,
+  readOnly: false,
   execute(command, actor = 'human') {
     const current = get();
+    if (current.readOnly) throw new Error('This is a read-only shared project. Make an editable copy before changing it.');
     const before = cloneDoc(current.doc);
     const next = cloneDoc(current.doc);
     const result = applySceneCommand(next, command);
     finishMutation(next, current.doc.revision);
+    recordFeature(next, command, result.label, result.objectIds, actor);
     const selection = result.objectIds.filter((id) => next.objects.some((object) => object.id === id)).slice(0, 1);
     set({
       doc: next,
@@ -439,12 +551,14 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   executeTransaction(commands, actor = 'human', label) {
     if (!commands.length || commands.length > 20) throw new Error('A transaction must contain between 1 and 20 operations.');
     const current = get();
+    if (current.readOnly) throw new Error('This is a read-only shared project. Make an editable copy before changing it.');
     const before = cloneDoc(current.doc);
     const next = cloneDoc(current.doc);
     const results = commands.map((command) => applySceneCommand(next, command));
     const objectIds = unique(results.flatMap((result) => result.objectIds));
     const resultLabel = label?.trim().slice(0, 120) || `Applied ${commands.length} scene operation${commands.length === 1 ? '' : 's'}`;
     finishMutation(next, current.doc.revision);
+    commands.forEach((command, index) => recordFeature(next, command, results[index].label, results[index].objectIds, actor));
     set({
       doc: next,
       history: [...current.history, before].slice(-100),
@@ -474,6 +588,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   },
   undo(actor = 'human') {
     const state = get();
+    if (state.readOnly) throw new Error('This is a read-only shared project. Make an editable copy before changing it.');
     const previous = state.history.at(-1);
     if (!previous) return false;
     const restored = cloneDoc(previous);
@@ -490,6 +605,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   },
   redo(actor = 'human') {
     const state = get();
+    if (state.readOnly) throw new Error('This is a read-only shared project. Make an editable copy before changing it.');
     const next = state.future[0];
     if (!next) return false;
     const restored = cloneDoc(next);
@@ -504,10 +620,10 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     });
     return true;
   },
-  hydrate(doc) {
-    set({ doc: doc ?? createLampStudy(), history: [], future: [], hydrated: true, saveState: 'saved' });
+  hydrate(doc, readOnly = false) {
+    set({ doc: doc ?? createLampStudy(), history: [], future: [], hydrated: true, readOnly, saveState: 'saved' });
   },
-  replaceDocument(doc, label = 'Imported project') {
+  replaceDocument(doc, label = 'Imported project', readOnly = false) {
     const state = get();
     set({
       doc,
@@ -515,8 +631,36 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       history: [...state.history, cloneDoc(state.doc)].slice(-100),
       future: [],
       activity: [activity('human', label, doc.objects.map((item) => item.id)), ...state.activity].slice(0, 80),
-      saveState: 'saving',
+      readOnly,
+      saveState: readOnly ? 'saved' : 'saving',
     });
+  },
+  openDocument(doc, label = 'Opened local project') {
+    const state = get();
+    set({
+      doc,
+      selection: [],
+      history: [],
+      future: [],
+      activity: [activity('human', label, doc.objects.map((item) => item.id)), ...state.activity].slice(0, 80),
+      readOnly: false,
+      saveState: 'saved',
+    });
+  },
+  createEditableCopy(title) {
+    const state = get();
+    if (!state.readOnly) throw new Error('The current project is already editable.');
+    const doc = makeEditableCopy(state.doc, title);
+    set({
+      doc,
+      selection: [],
+      history: [],
+      future: [],
+      readOnly: false,
+      saveState: 'saving',
+      activity: [activity('human', 'Created an editable local copy', doc.objects.map((item) => item.id)), ...state.activity].slice(0, 80),
+    });
+    return doc;
   },
   setToolMode(toolMode) { set({ toolMode }); },
   setSnapEnabled(enabled) {
@@ -534,23 +678,12 @@ export function getObjectSnapshot(objectId: string) {
 }
 
 export function getSceneHealth(doc = useStudioStore.getState().doc) {
-  const warnings: string[] = [];
-  const hiddenObjects = doc.objects.filter((object) => !object.visible).length;
-  const texturedObjects = doc.objects.filter((object) => object.material.baseColorTexture || object.material.normalTexture || object.material.roughnessTexture || object.material.metalnessTexture).length;
-  const booleanObjects = doc.objects.filter((object) => object.type === 'boolean').length;
-  const importedNodes = doc.objects.filter((object) => object.type === 'glb_node').length;
-  if (hiddenObjects) warnings.push(`${hiddenObjects} hidden object${hiddenObjects === 1 ? '' : 's'} remain in the feature graph.`);
-  if (doc.objects.length > 350) warnings.push('The scene is approaching the recommended 500-object limit.');
-  if (doc.objects.some((object) => Math.max(...object.scale) > 100)) warnings.push('One or more objects use unusually large scale values.');
-  return {
-    revision: doc.revision,
-    objectCount: doc.objects.length,
-    visibleObjectCount: doc.objects.length - hiddenObjects,
-    hiddenObjectCount: hiddenObjects,
-    booleanObjectCount: booleanObjects,
-    importedNodeCount: importedNodes,
-    texturedObjectCount: texturedObjects,
-    warnings,
-    status: warnings.length ? 'review' : 'healthy',
-  };
+  return analyzeScene(doc);
+}
+
+export function getCheckpointComparison(checkpointId: string) {
+  const doc = useStudioStore.getState().doc;
+  const checkpoint = doc.checkpoints.find((item) => item.id === checkpointId);
+  if (!checkpoint) throw new Error(`Checkpoint not found: ${checkpointId}`);
+  return compareCheckpoint(doc, checkpoint);
 }

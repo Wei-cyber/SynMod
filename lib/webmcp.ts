@@ -1,6 +1,8 @@
 import { z } from 'zod';
 
-import { getObjectSnapshot, getSceneHealth, useStudioStore } from '@/lib/studio-store';
+import { buildFeatureTree, compactObjectSnapshot } from '@/lib/scene-analysis';
+import { createReadOnlyShareUrl } from '@/lib/share-links';
+import { getCheckpointComparison, getObjectSnapshot, getSceneHealth, useStudioStore } from '@/lib/studio-store';
 import type { PrimitiveGeometry, SceneCommand, StudioMaterial } from '@/lib/studio-types';
 
 const emptySchema = { type: 'object', properties: {}, additionalProperties: false };
@@ -71,8 +73,20 @@ function materialPatch(input: z.infer<typeof materialInput>): Partial<StudioMate
 
 function response(summary: string, objectIds: string[] = []) {
   const state = useStudioStore.getState();
-  const objects = objectIds.map(getObjectSnapshot).filter(Boolean);
+  const objects = objectIds.map(getObjectSnapshot).map(compactObjectSnapshot).filter(Boolean);
   const payload = { ok: true, summary, revision: state.doc.revision, affectedObjectIds: objectIds, objects };
+  return { content: [{ type: 'text', text: JSON.stringify(payload) }], structuredContent: payload };
+}
+
+function versionResponse(summary: string) {
+  const state = useStudioStore.getState();
+  const payload = {
+    ok: true,
+    summary,
+    revision: state.doc.revision,
+    project: { projectId: state.doc.projectId, title: state.doc.title, branch: state.doc.branch },
+    checkpoints: state.doc.checkpoints.map(({ id, name, createdAt, sourceRevision }) => ({ id, name, createdAt, sourceRevision })),
+  };
   return { content: [{ type: 'text', text: JSON.stringify(payload) }], structuredContent: payload };
 }
 
@@ -165,7 +179,7 @@ export async function registerWebMcpTools() {
   const definitions = [
     tool('get_scene_summary', 'Read the current Model Room project, revision, hierarchy, parametric geometry, transforms, materials, Boolean features, and environment without changing it.', emptySchema, () => {
       const state = useStudioStore.getState();
-      const payload = { title: state.doc.title, revision: state.doc.revision, objectCount: state.doc.objects.length, selection: state.selection, settings: state.doc.settings, objects: state.doc.objects };
+      const payload = { projectId: state.doc.projectId, title: state.doc.title, revision: state.doc.revision, readOnly: state.readOnly, objectCount: state.doc.objects.length, featureCount: state.doc.features.length, checkpointCount: state.doc.checkpoints.length, selection: state.selection, settings: state.doc.settings, objects: state.doc.objects.map(compactObjectSnapshot) };
       return { content: [{ type: 'text', text: JSON.stringify(payload) }], structuredContent: payload };
     }, { readOnlyHint: true }),
     tool('get_object', 'Read one scene object by its stable ID. This tool does not change the scene.', {
@@ -174,16 +188,34 @@ export async function registerWebMcpTools() {
       const { object_id } = z.object({ object_id: objectId }).parse(input);
       const object = getObjectSnapshot(object_id);
       if (!object) throw new Error(`Object not found: ${object_id}`);
-      return { content: [{ type: 'text', text: JSON.stringify(object) }], structuredContent: object };
+      const compact = compactObjectSnapshot(object);
+      return { content: [{ type: 'text', text: JSON.stringify(compact) }], structuredContent: compact };
     }, { readOnlyHint: true }),
     tool('get_selection', 'Read the objects currently selected by the person in Model Room. This tool does not change the scene.', emptySchema, () => {
       const state = useStudioStore.getState();
-      const objects = state.selection.map(getObjectSnapshot).filter(Boolean);
+      const objects = state.selection.map(getObjectSnapshot).map(compactObjectSnapshot).filter(Boolean);
       const payload = { revision: state.doc.revision, selectedObjectIds: state.selection, objects };
       return { content: [{ type: 'text', text: JSON.stringify(payload) }], structuredContent: payload };
     }, { readOnlyHint: true }),
     tool('inspect_scene_health', 'Inspect object counts, hidden feature inputs, imported nodes, textured objects, and modeling warnings without changing the scene.', emptySchema, () => {
       const payload = getSceneHealth();
+      return { content: [{ type: 'text', text: JSON.stringify(payload) }], structuredContent: payload };
+    }, { readOnlyHint: true }),
+    tool('get_feature_tree', 'Read the procedural feature tree and per-object operation history without changing the scene.', emptySchema, () => {
+      const state = useStudioStore.getState();
+      const payload = { revision: state.doc.revision, featureCount: state.doc.features.length, tree: buildFeatureTree(state.doc), timeline: state.doc.features };
+      return { content: [{ type: 'text', text: JSON.stringify(payload) }], structuredContent: payload };
+    }, { readOnlyHint: true }),
+    tool('get_project_versions', 'Read local checkpoint metadata and branch ancestry without changing the scene.', emptySchema, () => {
+      const state = useStudioStore.getState();
+      const payload = { projectId: state.doc.projectId, title: state.doc.title, revision: state.doc.revision, branch: state.doc.branch, checkpoints: state.doc.checkpoints.map(({ id, name, createdAt, sourceRevision }) => ({ id, name, createdAt, sourceRevision })) };
+      return { content: [{ type: 'text', text: JSON.stringify(payload) }], structuredContent: payload };
+    }, { readOnlyHint: true }),
+    tool('compare_checkpoint', 'Compare the current scene against a named checkpoint without changing it.', {
+      type: 'object', properties: { checkpoint_id: { type: 'string', minLength: 1 } }, required: ['checkpoint_id'], additionalProperties: false,
+    }, (input) => {
+      const { checkpoint_id } = z.object({ checkpoint_id: z.string().min(1) }).parse(input);
+      const payload = getCheckpointComparison(checkpoint_id);
       return { content: [{ type: 'text', text: JSON.stringify(payload) }], structuredContent: payload };
     }, { readOnlyHint: true }),
     tool('add_primitive', 'Add one parametric primitive to the live scene. The change is visible, autosaved, attributed to Agent, and reversible.', {
@@ -236,7 +268,8 @@ export async function registerWebMcpTools() {
     tool('preview_scene_transaction', 'Validate and preview 1–20 modeling operations atomically without changing the scene. Use the returned revision with apply_scene_transaction.', transactionInputSchema, (input) => {
       const parsed = transactionSchema.parse(input);
       const preview = useStudioStore.getState().previewTransaction(parsed.operations.map(operationToCommand));
-      return { content: [{ type: 'text', text: JSON.stringify(preview) }], structuredContent: preview };
+      const compact = { ...preview, objects: preview.objects.map(compactObjectSnapshot) };
+      return { content: [{ type: 'text', text: JSON.stringify(compact) }], structuredContent: compact };
     }, { readOnlyHint: true }),
     tool('apply_scene_transaction', 'Atomically apply 1–20 previously previewable modeling operations as one visible revision and one undo step. Rejects stale expected_revision values and never partially applies.', transactionInputSchema, (input) => {
       const parsed = transactionSchema.extend({ expected_revision: z.number().int().nonnegative() }).parse(input);
@@ -245,6 +278,40 @@ export async function registerWebMcpTools() {
       const result = state.executeTransaction(parsed.operations.map(operationToCommand), 'agent', parsed.label);
       return response(result.label, result.objectIds);
     }),
+    tool('create_checkpoint', 'Create a named local checkpoint of the complete editable scene. This changes project history, autosaves locally, and is reversible.', {
+      type: 'object', properties: { name: { type: 'string', minLength: 1, maxLength: 80 } }, required: ['name'], additionalProperties: false,
+    }, (input) => {
+      const { name } = z.object({ name: z.string().min(1).max(80) }).parse(input);
+      const result = useStudioStore.getState().execute({ type: 'create_checkpoint', name }, 'agent');
+      return versionResponse(result.label);
+    }),
+    tool('restore_checkpoint', 'Restore all scene objects and settings from a named checkpoint. This is immediate and destructive to the current scene state, but reversible with undo.', {
+      type: 'object', properties: { checkpoint_id: { type: 'string', minLength: 1 } }, required: ['checkpoint_id'], additionalProperties: false,
+    }, (input) => {
+      const { checkpoint_id } = z.object({ checkpoint_id: z.string().min(1) }).parse(input);
+      const result = useStudioStore.getState().execute({ type: 'restore_checkpoint', checkpointId: checkpoint_id }, 'agent');
+      return versionResponse(result.label);
+    }, { readOnlyHint: false, destructiveHint: true }),
+    tool('branch_project', 'Create and switch to a new local project branch from the current scene or a checkpoint. The source project remains saved locally.', {
+      type: 'object', properties: { checkpoint_id: { type: 'string', minLength: 1 }, name: { type: 'string', maxLength: 100 } }, additionalProperties: false,
+    }, (input) => {
+      const parsed = z.object({ checkpoint_id: z.string().min(1).optional(), name: z.string().max(100).optional() }).parse(input);
+      const result = useStudioStore.getState().execute({ type: 'branch_project', checkpointId: parsed.checkpoint_id, name: parsed.name }, 'agent');
+      return versionResponse(result.label);
+    }),
+    tool('duplicate_project', 'Create and switch to a separate editable local copy of the current project. No cloud account is used.', {
+      type: 'object', properties: { name: { type: 'string', maxLength: 100 } }, additionalProperties: false,
+    }, (input) => {
+      const { name } = z.object({ name: z.string().max(100).optional() }).parse(input);
+      const result = useStudioStore.getState().execute({ type: 'duplicate_project', name }, 'agent');
+      return versionResponse(result.label);
+    }),
+    tool('create_readonly_share_link', 'Create a browser-only read-only share link containing the current project. The link can expose the scene to anyone who receives it; it does not upload to cloud storage.', emptySchema, async () => {
+      const state = useStudioStore.getState();
+      const url = await createReadOnlyShareUrl(state.doc);
+      const payload = { ok: true, revision: state.doc.revision, summary: 'Created read-only project link', url, mode: 'read-only', storage: 'embedded-in-link' };
+      return { content: [{ type: 'text', text: JSON.stringify(payload) }], structuredContent: payload };
+    }, { readOnlyHint: true, openWorldHint: true }),
     tool('rename_object', 'Rename one scene object. Applies immediately and is reversible.', {
       type: 'object', properties: { object_id: objectIdSchema, name: { type: 'string', minLength: 1, maxLength: 80 } }, required: ['object_id', 'name'], additionalProperties: false,
     }, (input) => { const parsed = z.object({ object_id: objectId, name: z.string().min(1).max(80) }).parse(input); return run({ type: 'rename', objectId: parsed.object_id, name: parsed.name }); }),

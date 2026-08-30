@@ -1,7 +1,7 @@
 'use client';
 
 import dynamic from 'next/dynamic';
-import { useRef, useState, type ChangeEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
 import {
   AlertCircle,
   Box,
@@ -19,11 +19,15 @@ import {
   EyeOff,
   FileJson,
   Focus,
+  FolderOpen,
+  GitBranch,
+  GitCompare,
   Grid3X3,
   Group,
   MousePointer2,
   ImageDown,
   ImagePlus,
+  History,
   Minus,
   PanelLeft,
   Redo2,
@@ -31,11 +35,14 @@ import {
   Scale3D,
   SlidersHorizontal,
   Sparkles,
+  Share2,
+  ShieldCheck,
   SunMedium,
   Trash2,
   Undo2,
   Ungroup,
   Upload,
+  Waypoints,
   X,
 } from 'lucide-react';
 
@@ -52,7 +59,9 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '
 import { Slider } from '@/components/ui/slider';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { exportSceneGlb, exportViewportPng, validateAndEncodeGlb } from '@/lib/gltf-files';
-import { downloadJson, imageFileToDataUrl, readJsonProject } from '@/lib/persistence';
+import { downloadJson, imageFileToDataUrl, listLocalProjects, loadLocalProject, readJsonProject, type LocalProjectSummary } from '@/lib/persistence';
+import { analyzeScene, buildFeatureTree, compareCheckpoint, type FeatureTreeNode } from '@/lib/scene-analysis';
+import { createReadOnlyShareUrl } from '@/lib/share-links';
 import { useStudioStore } from '@/lib/studio-store';
 import { isPrimitiveType, PRIMITIVE_LABELS, type EnvironmentPreset, type PrimitiveGeometry, type PrimitiveType, type StudioObject, type Vec3 } from '@/lib/studio-types';
 
@@ -81,6 +90,7 @@ function FileActions() {
   const execute = useStudioStore((state) => state.execute);
   const replaceDocument = useStudioStore((state) => state.replaceDocument);
   const setError = useStudioStore((state) => state.setError);
+  const readOnly = useStudioStore((state) => state.readOnly);
 
   const onImport = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -101,7 +111,7 @@ function FileActions() {
   return (
     <>
       <input ref={fileInput} className="sr-only" type="file" accept=".json,.model-room.json,.glb,application/json,model/gltf-binary" onChange={onImport} />
-      <Button variant="outline" size="sm" onClick={() => fileInput.current?.click()}><Upload /> Import</Button>
+      <Button variant="outline" size="sm" disabled={readOnly} onClick={() => fileInput.current?.click()}><Upload /> Import</Button>
       <DropdownMenu>
         <DropdownMenuTrigger render={<Button size="sm" />}>
           <Download /> Export <ChevronDown />
@@ -194,11 +204,52 @@ function SceneOutliner() {
   );
 }
 
+function FeatureTreeRow({ node, depth = 0 }: { node: FeatureTreeNode; depth?: number }) {
+  const selection = useStudioStore((state) => state.selection);
+  const select = useStudioStore((state) => state.select);
+  const selected = Boolean(node.objectId && selection.includes(node.objectId));
+  return (
+    <>
+      <button
+        type="button"
+        className={`${selected ? 'selected' : ''} feature-tree-row`}
+        style={{ paddingLeft: 7 + depth * 12 }}
+        onClick={() => node.objectId && select([node.objectId])}
+      >
+        <span className="object-glyph">{node.objectId ? <Waypoints /> : <History />}</span>
+        <span className="object-row-name">{node.label}</span>
+        <span className="object-type">{node.revision !== undefined ? `R${node.revision}` : node.kind}</span>
+      </button>
+      {node.children?.map((child) => <FeatureTreeRow key={`${node.id}-${child.id}`} node={child} depth={depth + 1} />)}
+    </>
+  );
+}
+
+function FeatureTreePanel() {
+  const doc = useStudioStore((state) => state.doc);
+  const tree = useMemo(() => buildFeatureTree(doc), [doc]);
+  return (
+    <div className="panel-section outliner-section feature-tree-panel">
+      <div className="section-heading"><p className="eyebrow">PROCEDURAL TREE</p><span>{doc.features.length} steps</span></div>
+      <div className="outliner-list">
+        {tree.map((node) => <FeatureTreeRow key={node.id} node={node} />)}
+      </div>
+      <div className="feature-timeline">
+        <p className="eyebrow">RECENT OPERATIONS</p>
+        {doc.features.slice(-5).reverse().map((feature) => <div key={feature.id}><span>{feature.actor === 'agent' ? 'A' : 'Y'}</span><p>{feature.label}</p><code>R{feature.revision}</code></div>)}
+      </div>
+    </div>
+  );
+}
+
 function LeftPanel({ drawer = false }: { drawer?: boolean }) {
   return (
     <aside className={`${drawer ? 'drawer-panel' : 'left-panel panel-surface'}`}>
-      <PrimitivePalette />
-      <SceneOutliner />
+      <Tabs defaultValue="objects" className="left-tabs">
+        <TabsList variant="line" className="left-tabs-list"><TabsTrigger value="objects"><Box /> Objects</TabsTrigger><TabsTrigger value="features"><Waypoints /> Features</TabsTrigger></TabsList>
+        <TabsContent value="objects"><PrimitivePalette /><SceneOutliner /></TabsContent>
+        <TabsContent value="features"><FeatureTreePanel /></TabsContent>
+      </Tabs>
       <div className="agent-note"><Sparkles /><div><strong>Agent-native modeling</strong><span>Ask for precise dimensions, PBR finishes, or Boolean cuts. Every transaction stays reversible.</span></div></div>
     </aside>
   );
@@ -421,6 +472,69 @@ function SceneInspector() {
   );
 }
 
+function VersionsPanel() {
+  const doc = useStudioStore((state) => state.doc);
+  const readOnly = useStudioStore((state) => state.readOnly);
+  const execute = useStudioStore((state) => state.execute);
+  const openDocument = useStudioStore((state) => state.openDocument);
+  const createEditableCopy = useStudioStore((state) => state.createEditableCopy);
+  const setError = useStudioStore((state) => state.setError);
+  const [name, setName] = useState('');
+  const [comparisonId, setComparisonId] = useState<string | null>(null);
+  const [projects, setProjects] = useState<LocalProjectSummary[]>([]);
+  const [shareStatus, setShareStatus] = useState('');
+  const health = useMemo(() => analyzeScene(doc), [doc]);
+  const comparison = useMemo(() => {
+    const checkpoint = doc.checkpoints.find((item) => item.id === comparisonId);
+    return checkpoint ? compareCheckpoint(doc, checkpoint) : null;
+  }, [comparisonId, doc]);
+
+  useEffect(() => {
+    if (readOnly) return;
+    const timer = setTimeout(() => void listLocalProjects().then(setProjects).catch(() => undefined), 650);
+    return () => clearTimeout(timer);
+  }, [doc.projectId, doc.revision, readOnly]);
+
+  const createCheckpoint = () => {
+    try {
+      execute({ type: 'create_checkpoint', name: name.trim() || `Revision ${doc.revision}` });
+      setName('');
+    } catch (error) { setError(error instanceof Error ? error.message : 'Checkpoint could not be created.'); }
+  };
+  const share = async () => {
+    try {
+      const url = await createReadOnlyShareUrl(doc);
+      await navigator.clipboard.writeText(url);
+      setShareStatus('Read-only link copied');
+    } catch (error) { setError(error instanceof Error ? error.message : 'The share link could not be created.'); }
+  };
+
+  return (
+    <div className="versions-panel">
+      {readOnly && <div className="readonly-card"><ShieldCheck /><div><strong>Read-only shared project</strong><span>Orbit, inspect, export, or make your own local editable copy.</span></div><Button size="xs" onClick={() => { createEditableCopy(); window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`); }}>Make editable copy</Button></div>}
+      <div className="inspector-heading"><div><p className="eyebrow">VERSIONS</p><strong>Checkpoints & branches</strong></div><span className="object-chip"><History /> LOCAL</span></div>
+      {!readOnly && <div className="checkpoint-create"><Input value={name} maxLength={80} onChange={(event) => setName(event.target.value)} placeholder={`Revision ${doc.revision}`} aria-label="Checkpoint name" /><Button size="sm" onClick={createCheckpoint}><Check /> Save checkpoint</Button></div>}
+      <div className="checkpoint-list">
+        {!doc.checkpoints.length && <p className="empty-state">Save a named checkpoint before a risky edit, then compare, restore, or branch from it.</p>}
+        {doc.checkpoints.slice().reverse().map((checkpoint) => (
+          <div className="checkpoint-card" key={checkpoint.id}>
+            <div><strong>{checkpoint.name}</strong><span>Revision {checkpoint.sourceRevision} · {new Date(checkpoint.createdAt).toLocaleDateString()}</span></div>
+            <div><Button variant="ghost" size="xs" onClick={() => setComparisonId(comparisonId === checkpoint.id ? null : checkpoint.id)}><GitCompare /> Compare</Button>{!readOnly && <><Button variant="ghost" size="xs" onClick={() => execute({ type: 'restore_checkpoint', checkpointId: checkpoint.id })}>Restore</Button><Button variant="ghost" size="xs" onClick={() => execute({ type: 'branch_project', checkpointId: checkpoint.id })}><GitBranch /> Branch</Button></>}</div>
+          </div>
+        ))}
+      </div>
+      {comparison && <div className="comparison-card"><strong>Compared with {comparison.checkpointName}</strong><span>{comparison.summary}</span></div>}
+      <div className="health-card">
+        <div className="section-heading"><p className="eyebrow">SCENE INTELLIGENCE</p><span className={`health-${health.status}`}>{health.status}</span></div>
+        <div className="health-metrics"><span><b>{health.totalTriangleCount.toLocaleString()}</b> triangles</span><span><b>{health.intersections.length}</b> overlaps</span><span><b>{(health.totalTextureBytes / 1024 / 1024).toFixed(1)} MB</b> textures</span></div>
+        <div className="warning-list">{health.warnings.slice(0, 5).map((warning, index) => <button key={`${warning.code}-${index}`} type="button" onClick={() => warning.objectIds.length && useStudioStore.getState().select(warning.objectIds)}><AlertCircle /><span>{warning.message}</span></button>)}{!health.warnings.length && <p><Check /> No scene issues detected.</p>}</div>
+      </div>
+      {!readOnly && <div className="project-actions"><Button variant="outline" size="sm" onClick={() => execute({ type: 'duplicate_project' })}><Copy /> Duplicate project</Button><Button variant="outline" size="sm" onClick={() => void share()}><Share2 /> Share read-only</Button>{shareStatus && <span>{shareStatus}</span>}</div>}
+      {!readOnly && projects.length > 1 && <div className="local-projects"><div className="section-heading"><p className="eyebrow">LOCAL PROJECTS</p><span>{projects.length}</span></div>{projects.map((project) => <button key={project.projectId} className={project.projectId === doc.projectId ? 'active' : ''} type="button" onClick={() => void loadLocalProject(project.projectId).then((loaded) => loaded && openDocument(loaded))}><FolderOpen /><span><strong>{project.title}</strong><small>{project.objectCount} objects · R{project.revision}</small></span></button>)}</div>}
+    </div>
+  );
+}
+
 function RightPanel({ drawer = false }: { drawer?: boolean }) {
   const objects = useStudioStore((state) => state.doc.objects);
   const selection = useStudioStore((state) => state.selection);
@@ -428,9 +542,10 @@ function RightPanel({ drawer = false }: { drawer?: boolean }) {
   return (
     <aside className={`${drawer ? 'drawer-panel' : 'right-panel panel-surface'}`}>
       <Tabs defaultValue="object" className="inspector-tabs">
-        <TabsList variant="line" className="inspector-tabs-list"><TabsTrigger value="object"><SlidersHorizontal /> Object</TabsTrigger><TabsTrigger value="scene"><SunMedium /> Scene</TabsTrigger><TabsTrigger value="activity"><Sparkles /> Activity</TabsTrigger></TabsList>
+        <TabsList variant="line" className="inspector-tabs-list"><TabsTrigger value="object"><SlidersHorizontal /> Object</TabsTrigger><TabsTrigger value="scene"><SunMedium /> Scene</TabsTrigger><TabsTrigger value="versions"><History /> Versions</TabsTrigger><TabsTrigger value="activity"><Sparkles /> Activity</TabsTrigger></TabsList>
         <TabsContent value="object">{object ? <ObjectInspector object={object} /> : <div className="inspector-empty"><MousePointer2 /><strong>Select an object</strong><span>Choose a shape in the canvas or scene list to inspect it.</span></div>}</TabsContent>
         <TabsContent value="scene"><SceneInspector /></TabsContent>
+        <TabsContent value="versions"><VersionsPanel /></TabsContent>
         <TabsContent value="activity"><div className="activity-block"><div className="section-heading"><p className="eyebrow">ACTIVITY</p><span>Live</span></div><ActivityFeed /></div></TabsContent>
       </Tabs>
     </aside>
@@ -444,6 +559,7 @@ function Header({ openLeft, openRight }: { openLeft: () => void; openRight: () =
   const future = useStudioStore((state) => state.future);
   const undo = useStudioStore((state) => state.undo);
   const redo = useStudioStore((state) => state.redo);
+  const readOnly = useStudioStore((state) => state.readOnly);
   const statusText = saveState === 'saved' ? 'Autosaved' : saveState === 'saving' ? 'Saving…' : 'Save issue';
   return (
     <header className="studio-header">
@@ -453,8 +569,8 @@ function Header({ openLeft, openRight }: { openLeft: () => void; openRight: () =
       </div>
       <div className="header-actions">
         <Button className="compact-panel-button left" variant="ghost" size="icon-sm" onClick={openLeft} aria-label="Open scene panel"><PanelLeft /></Button>
-        <Button variant="ghost" size="icon-sm" aria-label="Undo" disabled={!history.length} onClick={() => undo()}><Undo2 /></Button>
-        <Button variant="ghost" size="icon-sm" aria-label="Redo" disabled={!future.length} onClick={() => redo()}><Redo2 /></Button>
+        <Button variant="ghost" size="icon-sm" aria-label="Undo" disabled={readOnly || !history.length} onClick={() => undo()}><Undo2 /></Button>
+        <Button variant="ghost" size="icon-sm" aria-label="Redo" disabled={readOnly || !future.length} onClick={() => redo()}><Redo2 /></Button>
         <div className="header-divider" />
         <FileActions />
         <WebMcpBadge />
@@ -495,11 +611,14 @@ export function ModelRoomPreview() {
   const error = useStudioStore((state) => state.error);
   const setError = useStudioStore((state) => state.setError);
   const webmcpStatus = useStudioStore((state) => state.webmcpStatus);
+  const readOnly = useStudioStore((state) => state.readOnly);
+  const createEditableCopy = useStudioStore((state) => state.createEditableCopy);
   return (
-    <main className="studio-shell">
+    <main className={`studio-shell ${readOnly ? 'read-only' : ''}`}>
       <Header openLeft={() => setLeftOpen(true)} openRight={() => setRightOpen(true)} />
       <section className="studio-grid"><LeftPanel /><Viewport /><RightPanel /></section>
       <footer className="studio-status"><span>{doc.objects.length} OBJECTS</span><span>REVISION {doc.revision}</span><span>LOCAL PROJECT</span><span className="status-right">WEBMCP <b>{webmcpStatus.toUpperCase()}</b></span></footer>
+      {readOnly && <div className="readonly-banner"><ShieldCheck /><span><strong>Read-only shared project</strong> · inspect or export this scene</span><Button size="xs" onClick={() => { createEditableCopy(); window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`); }}>Make editable copy</Button></div>}
       {error && <div className="error-banner" role="alert"><AlertCircle /><span>{error}</span><button onClick={() => setError(null)} aria-label="Dismiss error"><X /></button></div>}
       <Sheet open={leftOpen} onOpenChange={setLeftOpen}><SheetContent side="left" className="mobile-sheet"><SheetHeader className="sr-only"><SheetTitle>Scene tools</SheetTitle><SheetDescription>Add and organize objects.</SheetDescription></SheetHeader><LeftPanel drawer /></SheetContent></Sheet>
       <Sheet open={rightOpen} onOpenChange={setRightOpen}><SheetContent side="right" className="mobile-sheet"><SheetHeader className="sr-only"><SheetTitle>Inspector</SheetTitle><SheetDescription>Edit the selected object.</SheetDescription></SheetHeader><RightPanel drawer /></SheetContent></Sheet>

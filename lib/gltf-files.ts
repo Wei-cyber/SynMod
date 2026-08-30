@@ -70,6 +70,22 @@ function materialDescriptor(material: unknown) {
   };
 }
 
+function meshMetrics(mesh: Mesh) {
+  const geometry = mesh.geometry;
+  const triangleCount = Math.floor((geometry.index?.count ?? geometry.getAttribute('position')?.count ?? 0) / 3);
+  if (!geometry.index) return { triangleCount, topologyStatus: 'unknown' as const, nonManifoldEdgeCount: 0 };
+  const edges = new Map<string, number>();
+  for (let index = 0; index < geometry.index.count; index += 3) {
+    const vertices = [geometry.index.getX(index), geometry.index.getX(index + 1), geometry.index.getX(index + 2)];
+    for (const [left, right] of [[vertices[0], vertices[1]], [vertices[1], vertices[2]], [vertices[2], vertices[0]]]) {
+      const key = left < right ? `${left}:${right}` : `${right}:${left}`;
+      edges.set(key, (edges.get(key) ?? 0) + 1);
+    }
+  }
+  const nonManifoldEdgeCount = [...edges.values()].filter((count) => count !== 2).length;
+  return { triangleCount, topologyStatus: nonManifoldEdgeCount ? 'non_manifold' as const : 'manifold' as const, nonManifoldEdgeCount };
+}
+
 export async function validateAndEncodeGlb(file: File) {
   if (file.size > 30 * 1024 * 1024) throw new Error('GLB files must be 30 MB or smaller.');
   const buffer = await file.arrayBuffer();
@@ -81,6 +97,8 @@ export async function validateAndEncodeGlb(file: File) {
   const nodes: GlbNodeDescriptor[] = traversed.slice(1).map((node, offset) => {
     const mesh = node instanceof Mesh ? node : null;
     const parentIndex = node.parent ? indexByUuid.get(node.parent.uuid) : undefined;
+    const descriptor = mesh ? materialDescriptor(mesh.material) : undefined;
+    const metrics = mesh ? meshMetrics(mesh) : undefined;
     return {
       nodeIndex: offset + 1,
       parentNodeIndex: parentIndex && parentIndex > 0 ? parentIndex : null,
@@ -90,7 +108,11 @@ export async function validateAndEncodeGlb(file: File) {
       rotation: [MathUtils.radToDeg(node.rotation.x), MathUtils.radToDeg(node.rotation.y), MathUtils.radToDeg(node.rotation.z)],
       scale: node.scale.toArray() as Vec3,
       visible: node.visible,
-      material: mesh ? materialDescriptor(mesh.material) : undefined,
+      material: descriptor,
+      triangleCount: metrics?.triangleCount,
+      topologyStatus: metrics?.topologyStatus,
+      nonManifoldEdgeCount: metrics?.nonManifoldEdgeCount,
+      missingMaterial: Boolean(mesh && !descriptor),
     };
   });
   gltf.scene.traverse((node) => {

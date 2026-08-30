@@ -5,6 +5,7 @@ export type Actor = 'human' | 'agent';
 export type Vec3 = [number, number, number];
 export type ToolMode = 'translate' | 'rotate' | 'scale';
 export type EnvironmentPreset = 'studio' | 'sunset' | 'warehouse' | 'night';
+export type FeatureKind = 'source' | 'transform' | 'geometry' | 'material' | 'boolean' | 'hierarchy' | 'visibility' | 'environment' | 'version';
 
 export interface PrimitiveGeometry {
   width: number;
@@ -54,6 +55,10 @@ export interface StudioObject {
   assetRootId?: string;
   assetNodeIndex?: number;
   assetNodeKind?: 'group' | 'mesh';
+  triangleCount?: number;
+  topologyStatus?: 'manifold' | 'non_manifold' | 'unknown';
+  nonManifoldEdgeCount?: number;
+  missingMaterial?: boolean;
 }
 
 export interface GlbNodeDescriptor {
@@ -66,15 +71,51 @@ export interface GlbNodeDescriptor {
   scale: Vec3;
   visible: boolean;
   material?: Partial<StudioMaterial>;
+  triangleCount?: number;
+  topologyStatus?: 'manifold' | 'non_manifold' | 'unknown';
+  nonManifoldEdgeCount?: number;
+  missingMaterial?: boolean;
+}
+
+export interface FeatureRecord {
+  id: string;
+  kind: FeatureKind;
+  label: string;
+  objectIds: string[];
+  revision: number;
+  createdAt: string;
+  actor: Actor;
+}
+
+export interface SceneSnapshot {
+  title: string;
+  revision: number;
+  objects: StudioObject[];
+  settings: SceneDocument['settings'];
+  features: FeatureRecord[];
+}
+
+export interface SceneCheckpoint {
+  id: string;
+  name: string;
+  createdAt: string;
+  sourceRevision: number;
+  snapshot: SceneSnapshot;
 }
 
 export interface SceneDocument {
-  schemaVersion: 2;
+  schemaVersion: 3;
   projectId: string;
   title: string;
   revision: number;
   updatedAt: string;
   objects: StudioObject[];
+  features: FeatureRecord[];
+  checkpoints: SceneCheckpoint[];
+  branch?: {
+    parentProjectId: string;
+    checkpointId?: string;
+  };
   settings: {
     gridSize: number;
     snapEnabled: boolean;
@@ -116,7 +157,11 @@ export type SceneCommand =
   | { type: 'duplicate'; objectId: string; name?: string; offset?: Vec3 }
   | { type: 'delete'; objectId: string }
   | { type: 'group'; objectIds: string[]; name?: string }
-  | { type: 'ungroup'; groupId: string };
+  | { type: 'ungroup'; groupId: string }
+  | { type: 'create_checkpoint'; name: string }
+  | { type: 'restore_checkpoint'; checkpointId: string }
+  | { type: 'branch_project'; checkpointId?: string; name?: string }
+  | { type: 'duplicate_project'; name?: string };
 
 export const DEFAULT_MATERIAL: StudioMaterial = {
   color: '#e9e4d8',
@@ -211,12 +256,24 @@ export function createLampStudy(): SceneDocument {
   });
 
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     projectId: 'lamp-study',
     title: 'Lamp Study',
     revision: 1,
     updatedAt: new Date().toISOString(),
     objects: [base, lower, joint, upper, shade],
+    features: [
+      {
+        id: 'feature-lamp-study',
+        kind: 'source',
+        label: 'Created Lamp Study primitives',
+        objectIds: [base.id, lower.id, joint.id, upper.id, shade.id],
+        revision: 1,
+        createdAt: new Date().toISOString(),
+        actor: 'human',
+      },
+    ],
+    checkpoints: [],
     settings: {
       gridSize: 0.5,
       snapEnabled: true,

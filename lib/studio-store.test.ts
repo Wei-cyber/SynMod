@@ -13,6 +13,7 @@ function resetStore() {
     activity: [],
     lastAgentChange: null,
     error: null,
+    readOnly: false,
   });
 }
 

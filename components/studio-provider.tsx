@@ -3,6 +3,7 @@
 import { useEffect, type ReactNode } from 'react';
 
 import { loadLocalScene, saveLocalScene } from '@/lib/persistence';
+import { readSharedDocumentFromHash } from '@/lib/share-links';
 import { useStudioStore } from '@/lib/studio-store';
 import { registerWebMcpTools } from '@/lib/webmcp';
 
@@ -13,17 +14,21 @@ function isEditableTarget(target: EventTarget | null) {
 export function StudioProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let active = true;
-    void loadLocalScene()
-      .then((doc) => active && useStudioStore.getState().hydrate(doc))
+    void (async () => {
+      const shared = await readSharedDocumentFromHash(window.location.hash);
+      if (shared) return { doc: shared, readOnly: true };
+      return { doc: await loadLocalScene(), readOnly: false };
+    })()
+      .then(({ doc, readOnly }) => active && useStudioStore.getState().hydrate(doc, readOnly))
       .catch(() => {
         if (!active) return;
         useStudioStore.getState().hydrate(null);
-        useStudioStore.getState().setError('The local project could not be restored, so Lamp Study was reopened.');
+        useStudioStore.getState().setError(window.location.hash.startsWith('#share=') ? 'The shared project link is corrupt, so Lamp Study was reopened.' : 'The local project could not be restored, so Lamp Study was reopened.');
       });
 
     let saveTimer: ReturnType<typeof setTimeout> | undefined;
     const unsubscribe = useStudioStore.subscribe((state, previous) => {
-      if (!state.hydrated || state.doc === previous.doc) return;
+      if (!state.hydrated || state.readOnly || state.doc === previous.doc) return;
       clearTimeout(saveTimer);
       saveTimer = setTimeout(() => {
         state.setSaveState('saving');
@@ -55,6 +60,7 @@ export function StudioProvider({ children }: { children: ReactNode }) {
       const state = useStudioStore.getState();
       const modifier = event.ctrlKey || event.metaKey;
       const key = event.key.toLowerCase();
+      if (state.readOnly && (modifier || event.key === 'Delete' || event.key === 'Backspace')) return;
       if (modifier && key === 'z') {
         event.preventDefault();
         if (event.shiftKey) state.redo();
