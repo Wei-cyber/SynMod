@@ -40,7 +40,7 @@ Pull requests and pushes run the same `npm run quality` gate in GitHub Actions. 
 
 Each registered tool has a human-readable title and the draft `readOnlyHint` and `untrustedContentHint` annotations. Execution callbacks accept `ToolExecuteCallbackOptions.signal`; cancelled calls reject before a synchronous mutation begins, and asynchronous sharing races against the signal. Results containing scene names, imported asset metadata, or other browser/user-supplied values are marked untrusted.
 
-High-impact delete, restore, undo, and redo calls require the exact current scene revision. This prevents stale agent intent from changing a scene that a person edited after the agent last inspected it. The host browser remains responsible for its invocation review and user-confirmation UI. Model Room deliberately exposes no agent-accessible “clear everything” command.
+High-impact delete, restore, undo, and redo calls require the exact current scene revision. This prevents stale agent intent from changing a scene that a person edited after the agent last inspected it. Delete, restore, and link-sharing tools also require an in-page browser confirmation; the host browser still performs its own invocation review. Model Room deliberately exposes no agent-accessible “clear everything” command.
 
 ## Storage and privacy
 

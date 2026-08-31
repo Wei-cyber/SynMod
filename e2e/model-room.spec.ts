@@ -90,6 +90,7 @@ test('registers the draft WebMCP contract and executes read, mutation, validatio
     return {
       startRevision: summary.structuredContent.revision,
       startCount: summary.structuredContent.objectCount,
+      objectId,
       addRevision: added.structuredContent.revision,
       materialRevision: material.structuredContent.revision,
       color: material.structuredContent.objects[0].material.color,
@@ -112,6 +113,21 @@ test('registers the draft WebMCP contract and executes read, mutation, validatio
   expect(browserResult.finalCount).toBe(6);
   await expect(page.getByTestId('outliner-row')).toHaveCount(6);
   await expect(page.getByTestId('outliner-row').filter({ hasText: 'Browser sphere' })).toBeVisible();
+
+  const deleteAttempt = page.evaluate(async ({ objectId, expectedRevision }) => {
+    const tools = (window as typeof window & { __modelRoomTools: Map<string, WebMcpToolDefinition> }).__modelRoomTools;
+    try {
+      await tools.get('delete_object')!.execute({ object_id: objectId, expected_revision: expectedRevision }, { signal: new AbortController().signal });
+      return '';
+    } catch (error) {
+      return error instanceof Error ? error.name : String(error);
+    }
+  }, { objectId: browserResult.objectId, expectedRevision: browserResult.finalRevision });
+  const confirmation = await page.waitForEvent('dialog');
+  expect(confirmation.message()).toContain('delete this object');
+  await confirmation.dismiss();
+  await expect(deleteAttempt).resolves.toBe('NotAllowedError');
+  await expect(page.getByTestId('outliner-row')).toHaveCount(6);
 });
 
 declare global {

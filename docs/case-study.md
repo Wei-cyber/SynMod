@@ -13,7 +13,7 @@ Model Room treats collaboration as shared state rather than chat UI. The person 
 - **Visible agent authorship.** Agent mutations pulse orange in the scene and are labeled Agent in the activity feed.
 - **Parametric and procedural before mesh editing.** Primitive parameters, hierarchy, and non-destructive Booleans provide useful design control without the complexity of topology editing.
 - **Local-first persistence.** IndexedDB, editable JSON, GLB, PNG, checkpoints, branches, and embedded read-only links provide continuity without a signed-in backend.
-- **Draft-aligned browser tools.** Registrations use human-readable titles, the exact two draft annotations, cancellation-aware async callbacks, structured verification data, and fresh-revision boundaries for destructive/history changes.
+- **Draft-aligned browser tools.** Registrations use human-readable titles, the exact two draft annotations, cancellation-aware async callbacks, structured verification data, fresh-revision boundaries for destructive/history changes, and explicit browser confirmation for deletion, restoration, and data-bearing links.
 
 ## Blank-left-panel regression
 

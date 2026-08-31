@@ -121,6 +121,14 @@ function abortable<T>(promise: Promise<T>, signal: AbortSignal) {
   });
 }
 
+function requireBrowserConfirmation(message: string, signal: AbortSignal) {
+  throwIfAborted(signal);
+  if (typeof window !== 'undefined' && !window.confirm(message)) {
+    throw new DOMException('The person did not approve this tool action.', 'NotAllowedError');
+  }
+  throwIfAborted(signal);
+}
+
 function titleForTool(name: string) {
   return name.split('_').map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(' ');
 }
@@ -341,8 +349,10 @@ export async function registerWebMcpTools() {
     }),
     tool('restore_checkpoint', 'Restore all scene objects and settings from a named checkpoint. This is immediate and destructive to the current scene state, but reversible with undo. Requires the current scene revision as a stale-write safety boundary.', {
       type: 'object', properties: { checkpoint_id: { type: 'string', minLength: 1 }, expected_revision: expectedRevisionSchema }, required: ['checkpoint_id', 'expected_revision'], additionalProperties: false,
-    }, (input) => {
+    }, (input, { signal }) => {
       const { checkpoint_id, expected_revision } = z.object({ checkpoint_id: z.string().min(1), expected_revision: z.number().int().nonnegative() }).parse(input);
+      requireCurrentRevision(expected_revision);
+      requireBrowserConfirmation('Allow the agent to replace the current scene with this checkpoint? You can undo the change afterward.', signal);
       requireCurrentRevision(expected_revision);
       const result = useStudioStore.getState().execute({ type: 'restore_checkpoint', checkpointId: checkpoint_id }, 'agent');
       return versionResponse(result.label);
@@ -362,6 +372,7 @@ export async function registerWebMcpTools() {
       return versionResponse(result.label);
     }),
     tool('create_readonly_share_link', 'Create a browser-only read-only share link containing the current project. The link can expose the scene to anyone who receives it; it does not upload to cloud storage. The browser must review this external disclosure before invocation.', emptySchema, async (_input, { signal }) => {
+      requireBrowserConfirmation('Allow the agent to create a link containing this complete scene? Anyone with the link can inspect it.', signal);
       const state = useStudioStore.getState();
       const url = await abortable(createReadOnlyShareUrl(state.doc), signal);
       throwIfAborted(signal);
@@ -376,7 +387,7 @@ export async function registerWebMcpTools() {
     }, (input) => { const parsed = z.object({ object_id: objectId, name: z.string().max(80).optional(), offset: vec3.optional() }).parse(input); return run({ type: 'duplicate', objectId: parsed.object_id, name: parsed.name, offset: parsed.offset }); }),
     tool('delete_object', 'Delete one object. Deleting a Boolean result restores its source operands. This destructive change is immediate but reversible with undo_scene_change. Requires the current scene revision as a stale-write safety boundary.', {
       type: 'object', properties: { object_id: objectIdSchema, expected_revision: expectedRevisionSchema }, required: ['object_id', 'expected_revision'], additionalProperties: false,
-    }, (input) => { const parsed = z.object({ object_id: objectId, expected_revision: z.number().int().nonnegative() }).parse(input); requireCurrentRevision(parsed.expected_revision); return run({ type: 'delete', objectId: parsed.object_id }); }),
+    }, (input, { signal }) => { const parsed = z.object({ object_id: objectId, expected_revision: z.number().int().nonnegative() }).parse(input); requireCurrentRevision(parsed.expected_revision); requireBrowserConfirmation('Allow the agent to delete this object? You can undo the change afterward.', signal); requireCurrentRevision(parsed.expected_revision); return run({ type: 'delete', objectId: parsed.object_id }); }),
     tool('group_objects', 'Create a transformable group from two or more objects that share the same parent. Applies immediately and is reversible.', {
       type: 'object', properties: { object_ids: { type: 'array', items: objectIdSchema, minItems: 2, uniqueItems: true }, name: { type: 'string', maxLength: 80 } }, required: ['object_ids'], additionalProperties: false,
     }, (input) => { const parsed = z.object({ object_ids: z.array(objectId).min(2), name: z.string().max(80).optional() }).parse(input); return run({ type: 'group', objectIds: parsed.object_ids, name: parsed.name }); }),

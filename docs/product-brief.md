@@ -31,7 +31,7 @@ The initial user is a designer, builder, educator, or prototyper who can describ
 - Human and agent actions use one command layer; no hidden agent-only state mutation path.
 - Inputs are schema-validated and finite before state changes; transactions apply atomically.
 - Tool results are marked untrusted when they can include browser, user, or imported data.
-- Destructive/history calls require a fresh scene revision; the browser owns invocation review and user confirmation.
+- Destructive/history calls require a fresh scene revision; delete, restore, and link-sharing tools also cross an in-page confirmation boundary, while the host browser retains its own invocation review.
 - Projects are device-local. Sharing is explicit and produces a URL containing the project; there is no account database.
 
 ## Non-goals for this release

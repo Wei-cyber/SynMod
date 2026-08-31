@@ -26,6 +26,7 @@ The Playwright suite now proves in a fresh browser context that:
 - a browser execution can read the scene, add a sphere, recolor it, and observe consecutive revisions;
 - invalid object IDs reject without changing selection;
 - an already-cancelled execution rejects with `AbortError` and does not increment the revision.
+- dismissing the browser confirmation for an agent deletion rejects with `NotAllowedError` and leaves the object visible.
 
 ## Hypotheses to validate next
 
