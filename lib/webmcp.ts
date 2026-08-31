@@ -11,6 +11,7 @@ const vec3Schema = {
   description: 'Exactly three finite numbers in X, Y, Z order.',
 };
 const objectIdSchema = { type: 'string', minLength: 1, description: 'Stable object ID from get_scene_summary or get_selection.' };
+const expectedRevisionSchema = { type: 'integer', minimum: 0, description: 'Required safety boundary. Read the current revision immediately before this operation.' };
 const primitiveEnum = ['box', 'sphere', 'cylinder', 'cone', 'torus'];
 const environmentEnum = ['studio', 'sunset', 'warehouse', 'night'];
 const vec3 = z.tuple([z.number(), z.number(), z.number()]);
@@ -95,14 +96,67 @@ function run(command: SceneCommand) {
   return response(result.label, result.objectIds);
 }
 
+type ToolAnnotations = {
+  readOnlyHint?: boolean;
+  untrustedContentHint?: boolean;
+};
+
+type ToolExecuteOptions = { signal: AbortSignal };
+
+function throwIfAborted(signal: AbortSignal) {
+  if (!signal.aborted) return;
+  if (signal.reason !== undefined) throw signal.reason;
+  throw new DOMException('The tool execution was cancelled.', 'AbortError');
+}
+
+function abortable<T>(promise: Promise<T>, signal: AbortSignal) {
+  throwIfAborted(signal);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason ?? new DOMException('The tool execution was cancelled.', 'AbortError'));
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (value) => { signal.removeEventListener('abort', onAbort); resolve(value); },
+      (error) => { signal.removeEventListener('abort', onAbort); reject(error); },
+    );
+  });
+}
+
+function titleForTool(name: string) {
+  return name.split('_').map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(' ');
+}
+
 function tool(
   name: string,
   description: string,
   inputSchema: Record<string, unknown>,
-  execute: (input: unknown) => unknown,
-  annotations: Record<string, boolean> = { readOnlyHint: false },
+  execute: (input: object, options: ToolExecuteOptions) => unknown,
+  annotations: ToolAnnotations = {},
 ) {
-  return { name, description, inputSchema, annotations, execute };
+  return {
+    name,
+    title: titleForTool(name),
+    description,
+    inputSchema,
+    annotations: {
+      readOnlyHint: annotations.readOnlyHint ?? false,
+      untrustedContentHint: annotations.untrustedContentHint ?? true,
+    },
+    execute: async (input: object, options: ToolExecuteOptions) => {
+      throwIfAborted(options.signal);
+      return execute(input, options);
+    },
+  } satisfies WebMcpToolDefinition;
+}
+
+function requireCurrentRevision(expectedRevision: number) {
+  const revision = useStudioStore.getState().doc.revision;
+  if (revision !== expectedRevision) throw new Error(`Scene revision mismatch. Expected ${expectedRevision}, current revision is ${revision}. Read the scene again before retrying.`);
+}
+
+function requireExistingObjectIds(ids: string[]) {
+  const available = new Set(useStudioStore.getState().doc.objects.map((object) => object.id));
+  const missing = [...new Set(ids)].filter((id) => !available.has(id));
+  if (missing.length) throw new Error(`Object${missing.length === 1 ? '' : 's'} not found: ${missing.join(', ')}`);
 }
 
 const transactionInputSchema = {
@@ -285,13 +339,14 @@ export async function registerWebMcpTools() {
       const result = useStudioStore.getState().execute({ type: 'create_checkpoint', name }, 'agent');
       return versionResponse(result.label);
     }),
-    tool('restore_checkpoint', 'Restore all scene objects and settings from a named checkpoint. This is immediate and destructive to the current scene state, but reversible with undo.', {
-      type: 'object', properties: { checkpoint_id: { type: 'string', minLength: 1 } }, required: ['checkpoint_id'], additionalProperties: false,
+    tool('restore_checkpoint', 'Restore all scene objects and settings from a named checkpoint. This is immediate and destructive to the current scene state, but reversible with undo. Requires the current scene revision as a stale-write safety boundary.', {
+      type: 'object', properties: { checkpoint_id: { type: 'string', minLength: 1 }, expected_revision: expectedRevisionSchema }, required: ['checkpoint_id', 'expected_revision'], additionalProperties: false,
     }, (input) => {
-      const { checkpoint_id } = z.object({ checkpoint_id: z.string().min(1) }).parse(input);
+      const { checkpoint_id, expected_revision } = z.object({ checkpoint_id: z.string().min(1), expected_revision: z.number().int().nonnegative() }).parse(input);
+      requireCurrentRevision(expected_revision);
       const result = useStudioStore.getState().execute({ type: 'restore_checkpoint', checkpointId: checkpoint_id }, 'agent');
       return versionResponse(result.label);
-    }, { readOnlyHint: false, destructiveHint: true }),
+    }),
     tool('branch_project', 'Create and switch to a new local project branch from the current scene or a checkpoint. The source project remains saved locally.', {
       type: 'object', properties: { checkpoint_id: { type: 'string', minLength: 1 }, name: { type: 'string', maxLength: 100 } }, additionalProperties: false,
     }, (input) => {
@@ -306,21 +361,22 @@ export async function registerWebMcpTools() {
       const result = useStudioStore.getState().execute({ type: 'duplicate_project', name }, 'agent');
       return versionResponse(result.label);
     }),
-    tool('create_readonly_share_link', 'Create a browser-only read-only share link containing the current project. The link can expose the scene to anyone who receives it; it does not upload to cloud storage.', emptySchema, async () => {
+    tool('create_readonly_share_link', 'Create a browser-only read-only share link containing the current project. The link can expose the scene to anyone who receives it; it does not upload to cloud storage. The browser must review this external disclosure before invocation.', emptySchema, async (_input, { signal }) => {
       const state = useStudioStore.getState();
-      const url = await createReadOnlyShareUrl(state.doc);
+      const url = await abortable(createReadOnlyShareUrl(state.doc), signal);
+      throwIfAborted(signal);
       const payload = { ok: true, revision: state.doc.revision, summary: 'Created read-only project link', url, mode: 'read-only', storage: 'embedded-in-link' };
       return { content: [{ type: 'text', text: JSON.stringify(payload) }], structuredContent: payload };
-    }, { readOnlyHint: true, openWorldHint: true }),
+    }, { readOnlyHint: true }),
     tool('rename_object', 'Rename one scene object. Applies immediately and is reversible.', {
       type: 'object', properties: { object_id: objectIdSchema, name: { type: 'string', minLength: 1, maxLength: 80 } }, required: ['object_id', 'name'], additionalProperties: false,
     }, (input) => { const parsed = z.object({ object_id: objectId, name: z.string().min(1).max(80) }).parse(input); return run({ type: 'rename', objectId: parsed.object_id, name: parsed.name }); }),
     tool('duplicate_object', 'Duplicate an object or group and offset the new copy. Applies immediately and is reversible.', {
       type: 'object', properties: { object_id: objectIdSchema, name: { type: 'string', maxLength: 80 }, offset: vec3Schema }, required: ['object_id'], additionalProperties: false,
     }, (input) => { const parsed = z.object({ object_id: objectId, name: z.string().max(80).optional(), offset: vec3.optional() }).parse(input); return run({ type: 'duplicate', objectId: parsed.object_id, name: parsed.name, offset: parsed.offset }); }),
-    tool('delete_object', 'Delete one object. Deleting a Boolean result restores its source operands. This destructive change is immediate but reversible with undo_scene_change.', {
-      type: 'object', properties: { object_id: objectIdSchema }, required: ['object_id'], additionalProperties: false,
-    }, (input) => { const parsed = z.object({ object_id: objectId }).parse(input); return run({ type: 'delete', objectId: parsed.object_id }); }, { readOnlyHint: false, destructiveHint: true }),
+    tool('delete_object', 'Delete one object. Deleting a Boolean result restores its source operands. This destructive change is immediate but reversible with undo_scene_change. Requires the current scene revision as a stale-write safety boundary.', {
+      type: 'object', properties: { object_id: objectIdSchema, expected_revision: expectedRevisionSchema }, required: ['object_id', 'expected_revision'], additionalProperties: false,
+    }, (input) => { const parsed = z.object({ object_id: objectId, expected_revision: z.number().int().nonnegative() }).parse(input); requireCurrentRevision(parsed.expected_revision); return run({ type: 'delete', objectId: parsed.object_id }); }),
     tool('group_objects', 'Create a transformable group from two or more objects that share the same parent. Applies immediately and is reversible.', {
       type: 'object', properties: { object_ids: { type: 'array', items: objectIdSchema, minItems: 2, uniqueItems: true }, name: { type: 'string', maxLength: 80 } }, required: ['object_ids'], additionalProperties: false,
     }, (input) => { const parsed = z.object({ object_ids: z.array(objectId).min(2), name: z.string().max(80).optional() }).parse(input); return run({ type: 'group', objectIds: parsed.object_ids, name: parsed.name }); }),
@@ -329,12 +385,16 @@ export async function registerWebMcpTools() {
     }, (input) => { const parsed = z.object({ group_id: objectId }).parse(input); return run({ type: 'ungroup', groupId: parsed.group_id }); }),
     tool('select_objects', 'Change the current selection so the person can inspect requested objects. This does not change model geometry.', {
       type: 'object', properties: { object_ids: { type: 'array', items: objectIdSchema, uniqueItems: true } }, required: ['object_ids'], additionalProperties: false,
-    }, (input) => { const parsed = z.object({ object_ids: z.array(objectId) }).parse(input); useStudioStore.getState().select(parsed.object_ids, 'agent'); return response(`Selected ${parsed.object_ids.length} object${parsed.object_ids.length === 1 ? '' : 's'}`, parsed.object_ids); }),
+    }, (input) => { const parsed = z.object({ object_ids: z.array(objectId) }).parse(input); requireExistingObjectIds(parsed.object_ids); useStudioStore.getState().select(parsed.object_ids, 'agent'); return response(`Selected ${parsed.object_ids.length} object${parsed.object_ids.length === 1 ? '' : 's'}`, parsed.object_ids); }),
     tool('focus_objects', 'Move the viewport camera to frame existing objects. This does not change model geometry.', {
       type: 'object', properties: { object_ids: { type: 'array', items: objectIdSchema, minItems: 1, uniqueItems: true } }, required: ['object_ids'], additionalProperties: false,
-    }, (input) => { const parsed = z.object({ object_ids: z.array(objectId).min(1) }).parse(input); useStudioStore.getState().focus(parsed.object_ids, 'agent'); return response('Focused the viewport', parsed.object_ids); }),
-    tool('undo_scene_change', 'Undo the most recent reversible modeling change and update the live scene immediately.', emptySchema, () => { if (!useStudioStore.getState().undo('agent')) throw new Error('There is no scene change to undo.'); return response('Undid the most recent scene change'); }),
-    tool('redo_scene_change', 'Redo the next modeling change in history and update the live scene immediately.', emptySchema, () => { if (!useStudioStore.getState().redo('agent')) throw new Error('There is no scene change to redo.'); return response('Redid the next scene change'); }),
+    }, (input) => { const parsed = z.object({ object_ids: z.array(objectId).min(1) }).parse(input); requireExistingObjectIds(parsed.object_ids); useStudioStore.getState().focus(parsed.object_ids, 'agent'); return response('Focused the viewport', parsed.object_ids); }),
+    tool('undo_scene_change', 'Undo the most recent reversible modeling change and update the live scene immediately. Requires the current scene revision as a stale-write safety boundary.', {
+      type: 'object', properties: { expected_revision: expectedRevisionSchema }, required: ['expected_revision'], additionalProperties: false,
+    }, (input) => { const { expected_revision } = z.object({ expected_revision: z.number().int().nonnegative() }).parse(input); requireCurrentRevision(expected_revision); if (!useStudioStore.getState().undo('agent')) throw new Error('There is no scene change to undo.'); return response('Undid the most recent scene change'); }),
+    tool('redo_scene_change', 'Redo the next modeling change in history and update the live scene immediately. Requires the current scene revision as a stale-write safety boundary.', {
+      type: 'object', properties: { expected_revision: expectedRevisionSchema }, required: ['expected_revision'], additionalProperties: false,
+    }, (input) => { const { expected_revision } = z.object({ expected_revision: z.number().int().nonnegative() }).parse(input); requireCurrentRevision(expected_revision); if (!useStudioStore.getState().redo('agent')) throw new Error('There is no scene change to redo.'); return response('Redid the next scene change'); }),
   ];
 
   try {

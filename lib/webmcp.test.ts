@@ -6,8 +6,13 @@ import { registerWebMcpTools } from '@/lib/webmcp';
 
 interface CapturedTool {
   name: string;
-  annotations?: Record<string, boolean>;
-  execute: (input: unknown) => unknown;
+  title?: string;
+  annotations?: { readOnlyHint?: boolean; untrustedContentHint?: boolean };
+  execute: (input: object, options: { signal: AbortSignal }) => Promise<unknown>;
+}
+
+function executeTool<T = unknown>(tool: CapturedTool, input: object, signal = new AbortController().signal) {
+  return tool.execute(input, { signal }) as Promise<T>;
 }
 
 describe('WebMCP tools', () => {
@@ -33,7 +38,14 @@ describe('WebMCP tools', () => {
       'get_feature_tree', 'get_project_versions', 'compare_checkpoint', 'create_checkpoint',
       'restore_checkpoint', 'branch_project', 'duplicate_project', 'create_readonly_share_link',
     ]));
-    expect(tools.find((tool) => tool.name === 'get_scene_summary')?.annotations?.readOnlyHint).toBe(true);
+    expect(tools).toHaveLength(29);
+    expect(tools.every((tool) => Boolean(tool.title?.trim()))).toBe(true);
+    expect(tools.every((tool) => Object.keys(tool.annotations ?? {}).sort().join(',') === 'readOnlyHint,untrustedContentHint')).toBe(true);
+    expect(tools.every((tool) => tool.annotations?.untrustedContentHint === true)).toBe(true);
+    expect(tools.find((tool) => tool.name === 'get_scene_summary')).toMatchObject({
+      title: 'Get Scene Summary',
+      annotations: { readOnlyHint: true, untrustedContentHint: true },
+    });
     expect(useStudioStore.getState().webmcpStatus).toBe('ready');
     cleanup();
     expect(signal?.aborted).toBe(true);
@@ -44,7 +56,7 @@ describe('WebMCP tools', () => {
     Object.defineProperty(globalThis, 'document', { configurable: true, value: { modelContext: { registerTool: async (definition: CapturedTool) => { tools.push(definition); } } } });
     await registerWebMcpTools();
     const add = tools.find((tool) => tool.name === 'add_primitive')!;
-    const result = await add.execute({ primitive_type: 'sphere', name: 'Blue marker', position: [1, 2, 3], color: '#3366ff' }) as { structuredContent: { revision: number; affectedObjectIds: string[]; objects: Array<{ name: string }> } };
+    const result = await executeTool<{ structuredContent: { revision: number; affectedObjectIds: string[]; objects: Array<{ name: string }> } }>(add, { primitive_type: 'sphere', name: 'Blue marker', position: [1, 2, 3], color: '#3366ff' });
     expect(result.structuredContent.affectedObjectIds).toHaveLength(1);
     expect(result.structuredContent.objects[0].name).toBe('Blue marker');
     expect(useStudioStore.getState().activity[0].actor).toBe('agent');
@@ -57,8 +69,11 @@ describe('WebMCP tools', () => {
     await registerWebMcpTools();
     const revision = useStudioStore.getState().doc.revision;
     const transform = tools.find((tool) => tool.name === 'set_object_transform')!;
-    expect(() => transform.execute({ object_id: 'lamp-shade', scale: [1, -1, 1] })).toThrow();
+    await expect(executeTool(transform, { object_id: 'lamp-shade', scale: [1, -1, 1] })).rejects.toThrow();
     expect(useStudioStore.getState().doc.revision).toBe(revision);
+    const select = tools.find((tool) => tool.name === 'select_objects')!;
+    await expect(executeTool(select, { object_ids: ['missing-object'] })).rejects.toThrow(/not found/);
+    expect(useStudioStore.getState().selection).toEqual([]);
   });
 
   it('previews and applies an atomic agent transaction with revision protection', async () => {
@@ -71,12 +86,12 @@ describe('WebMCP tools', () => {
       { action: 'set_geometry', object_id: 'lamp-shade', geometry: { height: 1.7 } },
       { action: 'set_material', object_id: 'lamp-shade', material: { color: '#cc5500' } },
     ];
-    const preview = await previewTool.execute({ operations }) as { structuredContent: { revision: number } };
+    const preview = await executeTool<{ structuredContent: { revision: number } }>(previewTool, { operations });
     expect(useStudioStore.getState().doc.objects.find((object) => object.id === 'lamp-shade')?.geometry?.height).toBe(1);
-    const result = await applyTool.execute({ expected_revision: preview.structuredContent.revision, label: 'Warm shade refinement', operations }) as { structuredContent: { revision: number } };
+    const result = await executeTool<{ structuredContent: { revision: number } }>(applyTool, { expected_revision: preview.structuredContent.revision, label: 'Warm shade refinement', operations });
     expect(result.structuredContent.revision).toBe(preview.structuredContent.revision + 1);
     expect(useStudioStore.getState().activity[0]).toMatchObject({ actor: 'agent', label: 'Warm shade refinement' });
-    expect(() => applyTool.execute({ expected_revision: preview.structuredContent.revision, operations })).toThrow(/Scene changed/);
+    await expect(executeTool(applyTool, { expected_revision: preview.structuredContent.revision, operations })).rejects.toThrow(/Scene changed/);
   });
 
   it('returns compact texture-safe objects and controls checkpoint history through tools', async () => {
@@ -86,10 +101,36 @@ describe('WebMCP tools', () => {
     useStudioStore.setState({ doc, readOnly: false });
     Object.defineProperty(globalThis, 'document', { configurable: true, value: { modelContext: { registerTool: async (definition: CapturedTool) => { tools.push(definition); } } } });
     await registerWebMcpTools();
-    const summary = await tools.find((tool) => tool.name === 'get_scene_summary')!.execute({}) as { structuredContent: unknown };
+    const summary = await executeTool<{ structuredContent: unknown }>(tools.find((tool) => tool.name === 'get_scene_summary')!, {});
     expect(JSON.stringify(summary.structuredContent)).not.toContain('data:image');
-    const created = await tools.find((tool) => tool.name === 'create_checkpoint')!.execute({ name: 'Agent checkpoint' }) as { structuredContent: { checkpoints: Array<{ name: string }> } };
+    const created = await executeTool<{ structuredContent: { checkpoints: Array<{ name: string }> } }>(tools.find((tool) => tool.name === 'create_checkpoint')!, { name: 'Agent checkpoint' });
     expect(created.structuredContent.checkpoints[0].name).toBe('Agent checkpoint');
     expect(useStudioStore.getState().activity[0].actor).toBe('agent');
+  });
+
+  it('honors execution cancellation before reads or mutations begin', async () => {
+    const tools: CapturedTool[] = [];
+    Object.defineProperty(globalThis, 'document', { configurable: true, value: { modelContext: { registerTool: async (definition: CapturedTool) => { tools.push(definition); } } } });
+    await registerWebMcpTools();
+    const controller = new AbortController();
+    controller.abort(new DOMException('Stopped by caller', 'AbortError'));
+    const revision = useStudioStore.getState().doc.revision;
+    await expect(executeTool(tools.find((tool) => tool.name === 'get_scene_summary')!, {}, controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
+    await expect(executeTool(tools.find((tool) => tool.name === 'add_primitive')!, { primitive_type: 'box' }, controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
+    expect(useStudioStore.getState().doc.revision).toBe(revision);
+  });
+
+  it('requires a current revision for destructive and history tools', async () => {
+    const tools: CapturedTool[] = [];
+    Object.defineProperty(globalThis, 'document', { configurable: true, value: { modelContext: { registerTool: async (definition: CapturedTool) => { tools.push(definition); } } } });
+    await registerWebMcpTools();
+    const revision = useStudioStore.getState().doc.revision;
+    const deleteTool = tools.find((tool) => tool.name === 'delete_object')!;
+    await expect(executeTool(deleteTool, { object_id: 'lamp-base', expected_revision: revision - 1 })).rejects.toThrow(/revision mismatch/);
+    expect(useStudioStore.getState().doc.objects).toHaveLength(5);
+    const deleted = await executeTool<{ structuredContent: { revision: number } }>(deleteTool, { object_id: 'lamp-base', expected_revision: revision });
+    expect(deleted.structuredContent.revision).toBe(revision + 1);
+    await executeTool(tools.find((tool) => tool.name === 'undo_scene_change')!, { expected_revision: revision + 1 });
+    expect(useStudioStore.getState().doc.objects).toHaveLength(5);
   });
 });

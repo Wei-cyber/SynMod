@@ -95,11 +95,14 @@ function Carousel({
 
   React.useEffect(() => {
     if (!api) return;
-    onSelect(api);
+    let active = true;
+    queueMicrotask(() => active && onSelect(api));
     api.on('reInit', onSelect);
     api.on('select', onSelect);
 
     return () => {
+      active = false;
+      api.off('reInit', onSelect);
       api?.off('select', onSelect);
     };
   }, [api, onSelect]);
@@ -118,16 +121,15 @@ function Carousel({
         canScrollNext,
       }}
     >
-      <div
+      <section
         onKeyDownCapture={handleKeyDown}
         className={cn('relative', className)}
-        role="region"
         aria-roledescription="carousel"
         data-slot="carousel"
         {...props}
       >
         {children}
-      </div>
+      </section>
     </CarouselContext.Provider>
   );
 }
@@ -157,8 +159,7 @@ function CarouselItem({ className, ...props }: React.ComponentProps<'div'>) {
   const { orientation } = useCarousel();
 
   return (
-    <div
-      role="group"
+    <section
       aria-roledescription="slide"
       data-slot="carousel-item"
       className={cn(

@@ -205,7 +205,10 @@ button { color: inherit; }
 .left-tabs-list button { font-size: 9px; }
 .left-tabs-list svg { width: 12px; }
 .left-tabs [data-slot="tabs-content"] { min-height: 0; flex: 1; display: none; flex-direction: column; overflow: hidden; }
+.left-tabs [data-slot="tabs-content"]:not([hidden]),
+.left-tabs [data-slot="tabs-content"][data-active],
 .left-tabs [data-slot="tabs-content"][data-state="active"] { display: flex; }
+.left-tabs [data-slot="tabs-content"][hidden] { display: none; }
 .feature-tree-panel { height: 100%; border-bottom: 0; }
 .feature-tree-row { min-height: 31px; height: auto !important; }
 .feature-tree-row .object-type { max-width: 76px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -1,9 +1,19 @@
+interface WebMcpToolAnnotations {
+  readOnlyHint?: boolean;
+  untrustedContentHint?: boolean;
+}
+
+interface WebMcpToolExecuteCallbackOptions {
+  signal: AbortSignal;
+}
+
 interface WebMcpToolDefinition {
   name: string;
+  title?: string;
   description: string;
   inputSchema?: Record<string, unknown>;
-  annotations?: Record<string, boolean>;
-  execute: (input: unknown, options?: { signal?: AbortSignal }) => unknown;
+  annotations?: WebMcpToolAnnotations;
+  execute: (input: object, options: WebMcpToolExecuteCallbackOptions) => Promise<unknown>;
 }
 
 interface WebMcpModelContext {

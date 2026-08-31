@@ -129,7 +129,7 @@ function FileActions() {
 function PrimitivePalette() {
   const execute = useStudioStore((state) => state.execute);
   return (
-    <div className="panel-section">
+    <section className="panel-section" aria-label="Primitive palette" data-testid="primitive-palette">
       <p className="eyebrow">ADD PRIMITIVE</p>
       <div className="primitive-grid">
         {primitives.map(({ type, icon: Icon }) => (
@@ -138,7 +138,7 @@ function PrimitivePalette() {
           </button>
         ))}
       </div>
-    </div>
+    </section>
   );
 }
 
@@ -159,6 +159,8 @@ function OutlinerRow({ object, depth }: { object: StudioObject; depth: number })
     <>
       <button
         type="button"
+        data-testid="outliner-row"
+        data-object-id={object.id}
         className={`${selected ? 'selected' : ''} ${!object.visible ? 'object-hidden' : ''}`}
         style={{ paddingLeft: 7 + depth * 14 }}
         onClick={(event) => select(event.shiftKey ? selected ? selection.filter((id) => id !== object.id) : [...selection, object.id] : [object.id])}
@@ -184,7 +186,7 @@ function SceneOutliner() {
   return (
     <div className="panel-section outliner-section">
       <div className="section-heading"><p className="eyebrow">SCENE</p><span>{objects.length} objects</span></div>
-      <div className="outliner-list">
+      <div className="outliner-list" aria-label="Scene outliner" data-testid="scene-outliner">
         {objects.filter((object) => !object.parentId).map((object) => <OutlinerRow key={object.id} object={object} depth={0} />)}
         {!objects.length && <p className="empty-state">Add a primitive to start shaping your scene.</p>}
       </div>
