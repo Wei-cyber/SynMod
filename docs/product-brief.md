@@ -1,8 +1,8 @@
-# Model Room product brief
+# SynMod product brief
 
 ## Product promise
 
-**Shape ideas with an agent, in real time.** Model Room gives a person a legible 3D workspace and gives a browser agent a precise, inspectable tool surface. Every participant sees the same scene revision and can reverse the other's modeling operations.
+**Shape ideas with an agent, in real time.** SynMod gives a person a legible 3D workspace and gives a browser agent a precise, inspectable tool surface. Every participant sees the same scene revision and can reverse the other's modeling operations.
 
 ## Target user and job
 

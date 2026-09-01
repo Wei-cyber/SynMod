@@ -225,7 +225,7 @@ export async function saveLocalScene(doc: SceneDocument) {
 
 export function downloadJson(doc: SceneDocument) {
   const blob = new Blob([JSON.stringify(validateSceneDocument(doc), null, 2)], { type: 'application/json' });
-  downloadBlob(blob, `${safeFilename(doc.title)}.model-room.json`);
+  downloadBlob(blob, `${safeFilename(doc.title)}.synmod.json`);
 }
 
 export function downloadBlob(blob: Blob, filename: string) {
@@ -236,7 +236,7 @@ export function downloadBlob(blob: Blob, filename: string) {
 }
 
 export function safeFilename(value: string) {
-  return value.trim().replace(/[^a-z0-9-_]+/gi, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'model-room-project';
+  return value.trim().replace(/[^a-z0-9-_]+/gi, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'synmod-project';
 }
 
 export async function readJsonProject(file: File) {

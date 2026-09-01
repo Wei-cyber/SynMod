@@ -4,7 +4,7 @@
 
 Text-to-3D demos often hide either the modeling process or the model's state. A person can request a result, but cannot easily inspect the hierarchy, make a precise manual correction, or understand what the agent changed. Traditional browser modelers provide direct manipulation but usually do not expose a browser-native agent contract.
 
-Model Room treats collaboration as shared state rather than chat UI. The person works in the editor; the agent receives narrowly scoped tools from the page. Both act on the same document and history.
+SynMod treats collaboration as shared state rather than chat UI. The person works in the editor; the agent receives narrowly scoped tools from the page. Both act on the same document and history.
 
 ## Product and engineering decisions
 

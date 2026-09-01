@@ -7,7 +7,6 @@ import {
   Box,
   Check,
   ChevronDown,
-  Circle,
   CircleDashed,
   CircleDot,
   Cone,
@@ -47,6 +46,7 @@ import {
 } from 'lucide-react';
 
 import { Badge } from '@/components/ui/badge';
+import { SynModMark } from '@/components/synmod-mark';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
@@ -110,7 +110,7 @@ function FileActions() {
 
   return (
     <>
-      <input ref={fileInput} className="sr-only" type="file" accept=".json,.model-room.json,.glb,application/json,model/gltf-binary" onChange={onImport} />
+      <input ref={fileInput} className="sr-only" type="file" accept=".json,.synmod.json,.model-room.json,.glb,application/json,model/gltf-binary" onChange={onImport} />
       <Button variant="outline" size="sm" disabled={readOnly} onClick={() => fileInput.current?.click()}><Upload /> Import</Button>
       <DropdownMenu>
         <DropdownMenuTrigger render={<Button size="sm" />}>
@@ -566,8 +566,8 @@ function Header({ openLeft, openRight }: { openLeft: () => void; openRight: () =
   return (
     <header className="studio-header">
       <div className="brand-lockup">
-        <span className="brand-mark" aria-hidden="true"><Circle /></span>
-        <div><p className="brand-name">MODEL ROOM</p><p className="project-name">{doc.title} <span>·</span> {statusText}</p></div>
+        <span className="brand-mark"><SynModMark /></span>
+        <div><p className="brand-name">SynMod</p><p className="project-name">{doc.title} <span>·</span> {statusText}</p></div>
       </div>
       <div className="header-actions">
         <Button className="compact-panel-button left" variant="ghost" size="icon-sm" onClick={openLeft} aria-label="Open scene panel"><PanelLeft /></Button>

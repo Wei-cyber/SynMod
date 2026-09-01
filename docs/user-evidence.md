@@ -30,7 +30,7 @@ The Playwright suite now proves in a fresh browser context that:
 
 ## Hypotheses to validate next
 
-- People will understand that agent requests belong in the ChatGPT conversation beside the Site, not inside Model Room.
+- People will understand that agent requests belong in the ChatGPT conversation beside the Site, not inside SynMod.
 - Seeing agent actions in the activity feed and undo stack will improve confidence enough for iterative modeling.
 - Revision-guarded destructive calls and transaction previews will feel safe without adding excessive friction.
 - Designers will value procedural primitives/Booleans before they ask for topology-level editing.

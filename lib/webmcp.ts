@@ -239,7 +239,7 @@ export async function registerWebMcpTools() {
   useStudioStore.getState().setWebMcpStatus('checking');
   const controller = new AbortController();
   const definitions = [
-    tool('get_scene_summary', 'Read the current Model Room project, revision, hierarchy, parametric geometry, transforms, materials, Boolean features, and environment without changing it.', emptySchema, () => {
+    tool('get_scene_summary', 'Read the current SynMod project, revision, hierarchy, parametric geometry, transforms, materials, Boolean features, and environment without changing it.', emptySchema, () => {
       const state = useStudioStore.getState();
       const payload = { projectId: state.doc.projectId, title: state.doc.title, revision: state.doc.revision, readOnly: state.readOnly, objectCount: state.doc.objects.length, featureCount: state.doc.features.length, checkpointCount: state.doc.checkpoints.length, selection: state.selection, settings: state.doc.settings, objects: state.doc.objects.map(compactObjectSnapshot) };
       return { content: [{ type: 'text', text: JSON.stringify(payload) }], structuredContent: payload };
@@ -253,7 +253,7 @@ export async function registerWebMcpTools() {
       const compact = compactObjectSnapshot(object);
       return { content: [{ type: 'text', text: JSON.stringify(compact) }], structuredContent: compact };
     }, { readOnlyHint: true }),
-    tool('get_selection', 'Read the objects currently selected by the person in Model Room. This tool does not change the scene.', emptySchema, () => {
+    tool('get_selection', 'Read the objects currently selected by the person in SynMod. This tool does not change the scene.', emptySchema, () => {
       const state = useStudioStore.getState();
       const objects = state.selection.map(getObjectSnapshot).map(compactObjectSnapshot).filter(Boolean);
       const payload = { revision: state.doc.revision, selectedObjectIds: state.selection, objects };

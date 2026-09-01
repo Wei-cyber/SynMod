@@ -43,6 +43,8 @@ async function expectOpaqueTopmostMenu(page: Page, itemName: string) {
 test('shows the primitive palette and all five Lamp Study outliner rows', async ({ page }) => {
   await page.goto('/');
 
+  await expect(page.getByText('SynMod', { exact: true })).toBeVisible();
+
   const palette = page.getByTestId('primitive-palette');
   await expect(palette).toBeVisible();
   await expect(palette.getByText('ADD PRIMITIVE')).toBeVisible();

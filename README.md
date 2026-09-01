@@ -1,6 +1,6 @@
-# Model Room
+# SynMod
 
-Model Room is a desktop-first 3D collaboration studio for one person and a browser agent. People edit through a conventional modeling UI while ChatGPT/Codex uses page-registered WebMCP tools. Both paths share the same validated command layer, revision history, activity feed, autosave, and undo/redo stack.
+SynMod is a desktop-first 3D collaboration studio for one person and a browser agent. People edit through a conventional modeling UI while ChatGPT/Codex uses page-registered WebMCP tools. Both paths share the same validated command layer, revision history, activity feed, autosave, and undo/redo stack.
 
 The first visit opens an editable five-object **Lamp Study**. The app supports parametric boxes, spheres, cylinders, cones, and toruses; transforms and PBR materials; grouping; non-destructive Boolean operations; local checkpoints and branches; JSON/GLB import and export; viewport PNG export; environment lighting; and read-only links embedded entirely in the URL.
 
@@ -40,7 +40,7 @@ Pull requests and pushes run the same `npm run quality` gate in GitHub Actions. 
 
 Each registered tool has a human-readable title and the draft `readOnlyHint` and `untrustedContentHint` annotations. Execution callbacks accept `ToolExecuteCallbackOptions.signal`; cancelled calls reject before a synchronous mutation begins, and asynchronous sharing races against the signal. Results containing scene names, imported asset metadata, or other browser/user-supplied values are marked untrusted.
 
-High-impact delete, restore, undo, and redo calls require the exact current scene revision. This prevents stale agent intent from changing a scene that a person edited after the agent last inspected it. Delete, restore, and link-sharing tools also require an in-page browser confirmation; the host browser still performs its own invocation review. Model Room deliberately exposes no agent-accessible “clear everything” command.
+High-impact delete, restore, undo, and redo calls require the exact current scene revision. This prevents stale agent intent from changing a scene that a person edited after the agent last inspected it. Delete, restore, and link-sharing tools also require an in-page browser confirmation; the host browser still performs its own invocation review. SynMod deliberately exposes no agent-accessible “clear everything” command.
 
 ## Storage and privacy
 
