@@ -18,6 +18,28 @@ async function installWebMcpHarness(page: Page) {
   });
 }
 
+async function expectOpaqueTopmostMenu(page: Page, itemName: string) {
+  const menu = page.locator('[data-slot="dropdown-menu-content"]');
+  const item = menu.getByRole('menuitem', { name: itemName, exact: true });
+  await expect(menu).toBeVisible();
+  await expect(item).toBeVisible();
+  const surface = await menu.evaluate((element) => {
+    const background = getComputedStyle(element).backgroundColor;
+    const zIndex = Number(getComputedStyle(element.parentElement!).zIndex);
+    const rect = element.getBoundingClientRect();
+    const topElement = document.elementFromPoint(rect.left + rect.width / 2, rect.top + 12);
+    return {
+      background,
+      zIndex,
+      ownsTopElement: Boolean(topElement && element.contains(topElement)),
+    };
+  });
+  expect(surface.background).not.toBe('rgba(0, 0, 0, 0)');
+  expect(surface.background).not.toBe('transparent');
+  expect(surface.zIndex).toBeGreaterThanOrEqual(100);
+  expect(surface.ownsTopElement).toBe(true);
+}
+
 test('shows the primitive palette and all five Lamp Study outliner rows', async ({ page }) => {
   await page.goto('/');
 
@@ -33,6 +55,33 @@ test('shows the primitive palette and all five Lamp Study outliner rows', async 
   for (const name of ['Base', 'Lower arm', 'Joint', 'Upper arm', 'Shade']) {
     await expect(outlinerRows.filter({ hasText: name })).toBeVisible();
   }
+});
+
+test('keeps Export and Boolean menus opaque and above the editor while all outliner actions stay in bounds', async ({ page }) => {
+  await page.goto('/');
+
+  await page.getByRole('button', { name: 'Export', exact: true }).click();
+  await expectOpaqueTopmostMenu(page, 'Editable project JSON');
+  await page.keyboard.press('Escape');
+
+  const actionRow = page.getByTestId('outliner-actions');
+  const ungroup = actionRow.getByRole('button', { name: 'Ungroup', exact: true });
+  await expect(actionRow).toBeVisible();
+  await expect(ungroup).toBeVisible();
+  const bounds = await Promise.all([actionRow.boundingBox(), ungroup.boundingBox()]);
+  expect(bounds[0]).not.toBeNull();
+  expect(bounds[1]).not.toBeNull();
+  expect(bounds[1]!.x + bounds[1]!.width).toBeLessThanOrEqual(bounds[0]!.x + bounds[0]!.width + 0.5);
+
+  const rows = page.getByTestId('scene-outliner').getByTestId('outliner-row');
+  await rows.filter({ hasText: 'Base' }).click();
+  await rows.filter({ hasText: 'Lower arm' }).click({ modifiers: ['Shift'] });
+  const booleanButton = actionRow.getByRole('button', { name: 'Boolean', exact: true });
+  await expect(booleanButton).toBeEnabled();
+  await booleanButton.click();
+  await expectOpaqueTopmostMenu(page, 'Union');
+  await expect(page.getByRole('menuitem', { name: 'Subtract second', exact: true })).toBeVisible();
+  await expect(page.getByRole('menuitem', { name: 'Intersect', exact: true })).toBeVisible();
 });
 
 test('registers the draft WebMCP contract and executes read, mutation, validation, and cancellation paths in a browser', async ({ page }) => {

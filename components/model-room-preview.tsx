@@ -190,7 +190,7 @@ function SceneOutliner() {
         {objects.filter((object) => !object.parentId).map((object) => <OutlinerRow key={object.id} object={object} depth={0} />)}
         {!objects.length && <p className="empty-state">Add a primitive to start shaping your scene.</p>}
       </div>
-      <div className="outliner-actions">
+      <div className="outliner-actions" data-testid="outliner-actions">
         <DropdownMenu>
           <DropdownMenuTrigger render={<Button variant="ghost" size="xs" disabled={!canBoolean} />}><Combine /> Boolean</DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="w-44">

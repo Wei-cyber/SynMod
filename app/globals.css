@@ -7,6 +7,10 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
   --color-primary: var(--primary);
@@ -29,6 +33,10 @@
 :root {
   --background: #efede6;
   --foreground: #20211d;
+  --card: #f6f3ec;
+  --card-foreground: #20211d;
+  --popover: #f8f5ee;
+  --popover-foreground: #20211d;
   --primary: #f15722;
   --primary-foreground: #fff9f3;
   --secondary: #dedbd1;
@@ -93,7 +101,9 @@ button { color: inherit; }
 .object-row-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .object-type { display: flex; align-items: center; gap: 3px; opacity: .46; font: 8px var(--font-geist-mono); text-transform: uppercase; }
 .object-type svg { width: 9px; height: 9px; }
-.outliner-actions { display: flex; align-items: center; gap: 2px; padding-top: 10px; border-top: 1px solid #cecbc1; }
+.outliner-actions { display: flex; align-items: center; gap: 3px; padding-top: 10px; border-top: 1px solid #cecbc1; }
+.outliner-actions > button { min-width: 0; flex: 1 1 0; padding-inline: 4px; font-size: 9px; }
+.outliner-actions > button svg { width: 12px; height: 12px; }
 .empty-state { padding: 20px 10px; color: #84857d; font-size: 10px; line-height: 1.5; text-align: center; }
 .agent-note { display: flex; gap: 10px; margin: 12px; padding: 11px; color: #f4eee7; background: #292a25; border: 1px solid #484944; border-radius: 5px; }
 .agent-note svg { width: 16px; color: #ff6a2c; flex: 0 0 auto; }
