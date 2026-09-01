@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  metadataBase: new URL('https://model-room.jquan287619461.chatgpt.site'),
+  metadataBase: new URL('https://synmod.jquan287619461.chatgpt.site'),
   title: 'SynMod — Shape ideas with an agent',
   description: 'A WebMCP-powered 3D studio where you and an agent shape scenes together in real time.',
   icons: {
