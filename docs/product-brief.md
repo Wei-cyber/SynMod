@@ -10,7 +10,7 @@ The initial user is a designer, builder, educator, or prototyper who can describ
 
 ## Core experience
 
-1. Open an editable Lamp Study rather than a blank canvas.
+1. Open an editable Rover Study rather than a blank canvas.
 2. Add or select objects through the visible primitive palette and scene outliner.
 3. Manipulate the scene directly, or ask an agent to inspect and change it through compact, name-aware WebMCP tools.
 4. Watch a cancellable Agent Task indicator while validated changes appear with orange scene feedback and an Agent-attributed activity entry.
@@ -40,7 +40,7 @@ No signed-in cloud storage, real-time multi-human cursors, comments, animation t
 
 ## Release success criteria
 
-- A first-time user can see and use the primitive palette and all five seeded outliner rows.
+- A first-time user can see and use the primitive palette and the complete seeded rover hierarchy.
 - A browser agent can register, inspect, mutate, validate, cancel, and undo through the documented contract.
 - Human and agent changes create equivalent revisions, autosave behavior, activity attribution, and reversibility.
 - Lint, unit, browser E2E, and production build gates all pass before deployment.

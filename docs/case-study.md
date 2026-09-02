@@ -8,7 +8,7 @@ SynMod treats collaboration as shared state rather than chat UI. The person work
 
 ## Product and engineering decisions
 
-- **A seeded scene instead of an empty canvas.** Lamp Study immediately demonstrates hierarchy, scale, materials, lighting, selection, and revision history.
+- **A seeded scene instead of an empty canvas.** Rover Study immediately demonstrates hierarchy, scale, realistic materials, emissive lighting, a procedural Boolean, an articulated crane, and a gripper.
 - **One validated command layer.** Human controls and WebMCP callbacks call the same Zustand store commands, keeping validation, activity, undo/redo, and autosave behavior aligned.
 - **Visible agent authorship.** Agent mutations pulse orange in the scene and are labeled Agent in the activity feed.
 - **Parametric and procedural before mesh editing.** Primitive parameters, hierarchy, and non-destructive Booleans provide useful design control without the complexity of topology editing.
@@ -19,7 +19,7 @@ SynMod treats collaboration as shared state rather than chat UI. The person work
 
 The installed Base UI Tabs implementation marks the selected tab trigger with `data-active` and only mounts the active panel by default. A stylesheet assumed Radix-style `data-state="active"` on the panel and set every left panel to `display: none`, so the primitive palette and all five outliner rows existed in the DOM but were invisible.
 
-The fix recognizes Base UI's mounted/not-hidden panel contract while retaining compatibility selectors for `data-active` and `data-state="active"`. A Playwright regression now asserts that the complete primitive palette and exactly five seeded outliner rows are visible.
+The fix recognizes Base UI's mounted/not-hidden panel contract while retaining compatibility selectors for `data-active` and `data-state="active"`. A Playwright regression now asserts that the complete primitive palette and seeded rover hierarchy are visible.
 
 ## Outcome
 

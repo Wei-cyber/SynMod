@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { validateSceneDocument } from '@/lib/persistence';
 import { useStudioStore } from '@/lib/studio-store';
-import { createLampStudy } from '@/lib/studio-types';
+import { createLampStudy, createRoverStudy, migrateUntouchedLampStudy } from '@/lib/studio-types';
 
 function resetStore() {
   useStudioStore.setState({
@@ -66,6 +66,31 @@ describe('scene command store', () => {
     const invalid = createLampStudy();
     invalid.objects[0].parentId = 'missing-parent';
     expect(() => validateSceneDocument(invalid)).toThrow(/Parent object/);
+  });
+
+  it('provides a complete procedural rover as the default demo', () => {
+    const rover = validateSceneDocument(createRoverStudy());
+    expect(rover).toMatchObject({ projectId: 'rover-study', title: 'Rover Study' });
+    expect(rover.objects).toHaveLength(23);
+    expect(rover.objects.find((object) => object.id === 'rover-chassis')?.boolean).toEqual({
+      operation: 'subtract',
+      operandIds: ['rover-chassis-source', 'rover-front-axle-cutter'],
+    });
+    expect(rover.objects.find((object) => object.id === 'rover-left-headlight')?.material.emissiveIntensity).toBeGreaterThan(0);
+    expect(rover.objects.find((object) => object.id === 'lamp-shade')?.name).toBe('Gripper housing');
+    expect(rover.settings).toMatchObject({ environment: 'warehouse', shadows: true });
+  });
+
+  it('migrates only an untouched Lamp Study starter to the rover demo', () => {
+    const untouched = createLampStudy();
+    const migrated = migrateUntouchedLampStudy(untouched);
+    expect(migrated.title).toBe('Rover Study');
+    expect(migrated.projectId).toBe(untouched.projectId);
+
+    const edited = createLampStudy();
+    edited.revision += 1;
+    edited.objects[0].position = [4, 0.15, 0];
+    expect(migrateUntouchedLampStudy(edited)).toBe(edited);
   });
 
   it('refines parametric geometry and scene lighting through reversible commands', () => {

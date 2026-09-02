@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { DEFAULT_GEOMETRY, DEFAULT_MATERIAL, type FeatureRecord, type SceneDocument } from '@/lib/studio-types';
+import { DEFAULT_GEOMETRY, DEFAULT_MATERIAL, migrateUntouchedLampStudy, type FeatureRecord, type SceneDocument } from '@/lib/studio-types';
 
 const vec3 = z.tuple([z.number(), z.number(), z.number()]);
 const embeddedImage = z.string().startsWith('data:image/').max(8_000_000).optional();
@@ -173,7 +173,7 @@ export async function loadLocalProject(projectId: string): Promise<SceneDocument
   const database = await openDatabase();
   try {
     const value = await requestValue(database.transaction(STORE_NAME).objectStore(STORE_NAME).get(`${PROJECT_PREFIX}${projectId}`));
-    return value ? validateSceneDocument(value) : null;
+    return value ? migrateUntouchedLampStudy(validateSceneDocument(value)) : null;
   } finally { database.close(); }
 }
 

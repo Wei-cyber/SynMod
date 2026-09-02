@@ -2,7 +2,7 @@
 
 SynMod is a desktop-first 3D collaboration studio for one person and a browser agent. People edit through a conventional modeling UI while ChatGPT/Codex uses page-registered WebMCP tools. Both paths share the same validated command layer, revision history, activity feed, autosave, and undo/redo stack.
 
-The first visit opens an editable five-object **Lamp Study**. The app supports parametric boxes, spheres, cylinders, cones, and toruses; transforms and PBR materials; grouping; non-destructive Boolean operations; local checkpoints and branches; JSON/GLB import and export; viewport PNG export; environment lighting; and read-only links embedded entirely in the URL. Fast WebMCP tools resolve normalized names, place primitives relative to world-space bounds, and apply up to 50 safe operations as one reversible transaction.
+The first visit opens an editable **Rover Study** with a procedural axle tunnel, articulated crane, gripper, sensor rig, emissive headlights, and PBR materials. The app supports parametric boxes, spheres, cylinders, cones, and toruses; transforms and PBR materials; grouping; non-destructive Boolean operations; local checkpoints and branches; JSON/GLB import and export; viewport PNG export; environment lighting; and read-only links embedded entirely in the URL. Fast WebMCP tools resolve normalized names, place primitives relative to world-space bounds, and apply up to 50 safe operations as one reversible transaction.
 
 ## Run locally
 

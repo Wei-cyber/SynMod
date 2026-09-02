@@ -23,7 +23,7 @@ export function StudioProvider({ children }: { children: ReactNode }) {
       .catch(() => {
         if (!active) return;
         useStudioStore.getState().hydrate(null);
-        useStudioStore.getState().setError(window.location.hash.startsWith('#share=') ? 'The shared project link is corrupt, so Lamp Study was reopened.' : 'The local project could not be restored, so Lamp Study was reopened.');
+        useStudioStore.getState().setError(window.location.hash.startsWith('#share=') ? 'The shared project link is corrupt, so Rover Study was reopened.' : 'The local project could not be restored, so Rover Study was reopened.');
       });
 
     let saveTimer: ReturnType<typeof setTimeout> | undefined;

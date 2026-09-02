@@ -7,7 +7,7 @@ import { analyzeScene, compareCheckpoint } from '@/lib/scene-analysis';
 import { makeEditableCopy } from '@/lib/share-links';
 import {
   createId,
-  createLampStudy,
+  createRoverStudy,
   DEFAULT_GEOMETRY,
   DEFAULT_MATERIAL,
   isPrimitiveType,
@@ -504,13 +504,13 @@ function unique(values: string[]) {
 }
 
 export const useStudioStore = create<StudioState>((set, get) => ({
-  doc: createLampStudy(),
-  selection: ['lamp-shade'],
+  doc: createRoverStudy(),
+  selection: ['rover-chassis'],
   history: [],
   future: [],
   activity: [
     { id: 'welcome-agent', actor: 'agent', label: 'Scene tools are ready', timestamp: Date.now() - 8_000, objectIds: [] },
-    { id: 'welcome-human', actor: 'human', label: 'Opened Lamp Study', timestamp: Date.now() - 65_000, objectIds: [] },
+    { id: 'welcome-human', actor: 'human', label: 'Opened Rover Study', timestamp: Date.now() - 65_000, objectIds: [] },
   ],
   agentTask: { token: 'idle', title: 'Agent ready', status: 'idle', startedAt: 0, affectedObjectIds: [] },
   agentTaskAbort: null,
@@ -631,7 +631,10 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     return true;
   },
   hydrate(doc, readOnly = false) {
-    set({ doc: doc ?? createLampStudy(), history: [], future: [], hydrated: true, readOnly, saveState: 'saved' });
+    const next = doc ?? createRoverStudy();
+    const initialSelection = next.objects.find((object) => object.id === 'rover-chassis')
+      ?? next.objects.find((object) => object.visible && object.type !== 'group');
+    set({ doc: next, selection: initialSelection ? [initialSelection.id] : [], history: [], future: [], hydrated: true, readOnly, saveState: 'saved' });
   },
   replaceDocument(doc, label = 'Imported project', readOnly = false) {
     const state = get();

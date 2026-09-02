@@ -299,6 +299,109 @@ export function createLampStudy(): SceneDocument {
   };
 }
 
+export function createRoverStudy(): SceneDocument {
+  const assemblyId = 'rover-assembly';
+  const charcoal = { ...DEFAULT_MATERIAL, color: '#252824', roughness: 0.38, metalness: 0.72 };
+  const rubber = { ...DEFAULT_MATERIAL, color: '#171816', roughness: 0.88, metalness: 0.04 };
+  const silver = { ...DEFAULT_MATERIAL, color: '#b7bcc0', roughness: 0.3, metalness: 0.82 };
+  const blueGray = { ...DEFAULT_MATERIAL, color: '#506779', roughness: 0.42, metalness: 0.38 };
+  const orange = { ...DEFAULT_MATERIAL, color: '#f15722', roughness: 0.32, metalness: 0.64 };
+  const warmLight = { ...DEFAULT_MATERIAL, color: '#ffd9a0', roughness: 0.22, metalness: 0.05, emissive: '#ff9f43', emissiveIntensity: 4.5 };
+
+  const assembly = makeObject('group', 'Lunar repair rover', { id: assemblyId });
+  const chassisSource = makeObject('box', 'Chassis source', {
+    id: 'rover-chassis-source', parentId: assemblyId, position: [0, 0.72, 0], scale: [3.6, 0.65, 2.7], visible: false, material: charcoal,
+  });
+  const axleCutter = makeObject('cylinder', 'Front axle cutter', {
+    id: 'rover-front-axle-cutter', parentId: assemblyId, position: [1.2, 0.48, 0], rotation: [90, 0, 0], scale: [0.75, 3.4, 0.75], visible: false,
+  });
+  const chassis = makeObject('boolean', 'Chassis', {
+    id: 'rover-chassis', parentId: assemblyId, material: charcoal,
+    boolean: { operation: 'subtract', operandIds: [chassisSource.id, axleCutter.id] },
+  });
+  const deck = makeObject('box', 'Equipment deck', {
+    id: 'rover-equipment-deck', parentId: assemblyId, position: [0, 1.08, 0], scale: [3, 0.18, 2.2], material: silver,
+  });
+  const cab = makeObject('box', 'Operator cab', {
+    id: 'rover-operator-cab', parentId: assemblyId, position: [-1.05, 1.55, 0], scale: [1.2, 0.9, 1.4], material: blueGray,
+  });
+  const wheelSpecs: Array<[string, string, number, number]> = [
+    ['rover-front-left-wheel', 'Front left wheel', 1.2, -1.55],
+    ['rover-front-right-wheel', 'Front right wheel', 1.2, 1.55],
+    ['rover-rear-left-wheel', 'Rear left wheel', -1.2, -1.55],
+    ['rover-rear-right-wheel', 'Rear right wheel', -1.2, 1.55],
+  ];
+  const wheels = wheelSpecs.map(([id, name, x, z]) => makeObject('cylinder', name, {
+    id, parentId: assemblyId, position: [x, 0.45, z], rotation: [90, 0, 0], scale: [0.9, 0.34, 0.9], material: rubber,
+  }));
+  const mast = makeObject('cylinder', 'Sensor mast', {
+    id: 'rover-sensor-mast', parentId: assemblyId, position: [-0.95, 2.45, 0], scale: [0.16, 1, 0.16], material: silver,
+  });
+  const sensorHead = makeObject('sphere', 'Sensor head', {
+    id: 'rover-sensor-head', parentId: assemblyId, position: [-0.95, 3.15, 0], scale: [0.55, 0.42, 0.55], material: silver,
+  });
+  const sensorHalo = makeObject('torus', 'Sensor halo', {
+    id: 'rover-sensor-halo', parentId: assemblyId, position: [-0.95, 3.15, 0], geometry: { ...DEFAULT_GEOMETRY, radius: 0.42, tube: 0.07, radialSegments: 48 }, material: orange,
+  });
+  const headlights = [
+    makeObject('sphere', 'Left headlight', { id: 'rover-left-headlight', parentId: assemblyId, position: [1.78, 0.78, -0.62], scale: [0.24, 0.24, 0.24], material: warmLight }),
+    makeObject('sphere', 'Right headlight', { id: 'rover-right-headlight', parentId: assemblyId, position: [1.78, 0.78, 0.62], scale: [0.24, 0.24, 0.24], material: warmLight }),
+  ];
+
+  // The original five Lamp Study primitives become the articulated crane.
+  const turntable = makeObject('cylinder', 'Crane turntable', {
+    id: 'lamp-base', parentId: assemblyId, position: [0.25, 1.3, 0], scale: [1.25, 0.24, 1.25], material: orange,
+  });
+  const lowerBoom = makeObject('cylinder', 'Crane lower boom', {
+    id: 'lamp-lower-arm', parentId: assemblyId, position: [0.3, 2.15, 0], rotation: [0, 0, -14], scale: [0.32, 1.7, 0.32], material: silver,
+  });
+  const elbow = makeObject('sphere', 'Crane elbow', {
+    id: 'lamp-joint', parentId: assemblyId, position: [0.7, 2.96, 0], scale: [0.5, 0.5, 0.5], material: orange,
+  });
+  const upperBoom = makeObject('cylinder', 'Crane upper boom', {
+    id: 'lamp-upper-arm', parentId: assemblyId, position: [1.18, 3.55, 0], rotation: [0, 0, -33], scale: [0.28, 1.55, 0.28], material: silver,
+  });
+  const gripperHousing = makeObject('cone', 'Gripper housing', {
+    id: 'lamp-shade', parentId: assemblyId, position: [1.75, 4.12, 0], rotation: [0, 0, -90], scale: [0.7, 0.55, 0.7],
+    geometry: { ...DEFAULT_GEOMETRY, radiusTop: 0.22, radiusBottom: 0.5 }, material: charcoal,
+  });
+  const wrist = makeObject('cylinder', 'Gripper wrist', {
+    id: 'rover-gripper-wrist', parentId: assemblyId, position: [2.08, 4.12, 0], rotation: [0, 0, -90], scale: [0.38, 0.48, 0.38], material: orange,
+  });
+  const jaws = [
+    makeObject('cylinder', 'Left gripper jaw', { id: 'rover-left-gripper-jaw', parentId: assemblyId, position: [2.48, 3.78, -0.3], rotation: [-18, 0, -20], scale: [0.18, 0.72, 0.18], material: charcoal }),
+    makeObject('cylinder', 'Right gripper jaw', { id: 'rover-right-gripper-jaw', parentId: assemblyId, position: [2.48, 3.78, 0.3], rotation: [18, 0, -20], scale: [0.18, 0.72, 0.18], material: charcoal }),
+  ];
+  const objects = [assembly, chassisSource, axleCutter, chassis, deck, cab, ...wheels, mast, sensorHead, sensorHalo, ...headlights, turntable, lowerBoom, elbow, upperBoom, gripperHousing, wrist, ...jaws];
+  const createdAt = new Date().toISOString();
+
+  return {
+    schemaVersion: 3,
+    projectId: 'rover-study',
+    title: 'Rover Study',
+    revision: 1,
+    updatedAt: createdAt,
+    objects,
+    features: [{
+      id: 'feature-rover-study', kind: 'source', label: 'Created Rover Study demo', objectIds: objects.map((object) => object.id), revision: 1, createdAt, actor: 'human',
+    }],
+    checkpoints: [],
+    settings: { gridSize: 0.5, snapEnabled: true, environment: 'warehouse', exposure: 1.15, backgroundColor: '#20211d', shadows: true },
+  };
+}
+
+export function migrateUntouchedLampStudy(doc: SceneDocument): SceneDocument {
+  const isUntouchedStarter = doc.projectId === 'lamp-study'
+    && doc.title === 'Lamp Study'
+    && doc.revision === 1
+    && doc.objects.length === 5
+    && doc.features.length === 1
+    && doc.features[0]?.id === 'feature-lamp-study'
+    && ['lamp-base', 'lamp-lower-arm', 'lamp-joint', 'lamp-upper-arm', 'lamp-shade'].every((id) => doc.objects.some((object) => object.id === id));
+  if (!isUntouchedStarter) return doc;
+  return { ...createRoverStudy(), projectId: doc.projectId };
+}
+
 export const PRIMITIVE_LABELS: Record<PrimitiveType, string> = {
   box: 'Box',
   sphere: 'Sphere',

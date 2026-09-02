@@ -40,7 +40,7 @@ async function expectOpaqueTopmostMenu(page: Page, itemName: string) {
   expect(surface.ownsTopElement).toBe(true);
 }
 
-test('shows the primitive palette and all five Lamp Study outliner rows', async ({ page }) => {
+test('shows the primitive palette and the complete Rover Study outliner', async ({ page }) => {
   await page.goto('/');
 
   await expect(page.getByText('SynMod', { exact: true })).toBeVisible();
@@ -53,8 +53,9 @@ test('shows the primitive palette and all five Lamp Study outliner rows', async 
   }
 
   const outlinerRows = page.getByTestId('scene-outliner').getByTestId('outliner-row');
-  await expect(outlinerRows).toHaveCount(5);
-  for (const name of ['Base', 'Lower arm', 'Joint', 'Upper arm', 'Shade']) {
+  await expect(outlinerRows).toHaveCount(23);
+  await expect(page.getByTestId('scene-outliner').locator('[data-object-id="rover-chassis"]')).toBeVisible();
+  for (const name of ['Operator cab', 'Front left wheel', 'Sensor head', 'Crane lower boom', 'Gripper housing']) {
     await expect(outlinerRows.filter({ hasText: name })).toBeVisible();
   }
 });
@@ -76,8 +77,8 @@ test('keeps Export and Boolean menus opaque and above the editor while all outli
   expect(bounds[1]!.x + bounds[1]!.width).toBeLessThanOrEqual(bounds[0]!.x + bounds[0]!.width + 0.5);
 
   const rows = page.getByTestId('scene-outliner').getByTestId('outliner-row');
-  await rows.filter({ hasText: 'Base' }).click();
-  await rows.filter({ hasText: 'Lower arm' }).click({ modifiers: ['Shift'] });
+  await rows.filter({ hasText: 'Equipment deck' }).click();
+  await rows.filter({ hasText: 'Operator cab' }).click({ modifiers: ['Shift'] });
   const booleanButton = actionRow.getByRole('button', { name: 'Boolean', exact: true });
   await expect(booleanButton).toBeEnabled();
   await booleanButton.click();
@@ -155,7 +156,7 @@ test('registers the draft WebMCP contract and executes read, mutation, validatio
   });
 
   expect(browserResult).toMatchObject({
-    startCount: 5,
+    startCount: 23,
     color: '#f15722',
     cancellationName: 'AbortError',
   });
@@ -164,8 +165,8 @@ test('registers the draft WebMCP contract and executes read, mutation, validatio
   expect(browserResult.addRevision).toBe(browserResult.startRevision + 1);
   expect(browserResult.materialRevision).toBe(browserResult.addRevision + 1);
   expect(browserResult.finalRevision).toBe(browserResult.materialRevision);
-  expect(browserResult.finalCount).toBe(6);
-  await expect(page.getByTestId('outliner-row')).toHaveCount(6);
+  expect(browserResult.finalCount).toBe(24);
+  await expect(page.getByTestId('outliner-row')).toHaveCount(24);
   await expect(page.getByTestId('outliner-row').filter({ hasText: 'Browser sphere' })).toBeVisible();
 
   const deleteAttempt = page.evaluate(async ({ objectId, expectedRevision }) => {
@@ -181,7 +182,7 @@ test('registers the draft WebMCP contract and executes read, mutation, validatio
   expect(confirmation.message()).toContain('delete this object');
   await confirmation.dismiss();
   await expect(deleteAttempt).resolves.toBe('NotAllowedError');
-  await expect(page.getByTestId('outliner-row')).toHaveCount(6);
+  await expect(page.getByTestId('outliner-row')).toHaveCount(24);
 });
 
 test('completes relative placement and temporary-reference modeling in one call each', async ({ page }) => {
