@@ -129,6 +129,14 @@ button { color: inherit; }
 .agent-pulse { position: absolute; left: 50%; bottom: 22px; display: flex; align-items: center; gap: 8px; padding: 8px 12px; color: #deddd8; background: rgba(36,37,32,.86); border: 1px solid #55564f; border-radius: 5px; transform: translateX(-50%); backdrop-filter: blur(14px); font-size: 10px; }
 .agent-pulse svg { width: 14px; color: #ff6a2c; }
 .agent-pulse strong { color: #fff; }
+.agent-pulse span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-pulse button { padding: 3px 6px; color: #f7f2eb; background: #454640; border: 1px solid #6a6b64; border-radius: 3px; cursor: pointer; font: 8px var(--font-geist-mono); }
+.agent-pulse button:hover { border-color: #f15722; }
+.agent-pulse.task-running { border-color: #f15722; }
+.agent-pulse.task-running > svg { animation: agent-task-spin 1.2s linear infinite; }
+.agent-pulse.task-applied > svg { color: #79b48f; }
+.agent-pulse.task-conflict, .agent-pulse.task-failed { border-color: #9b4f38; }
+@keyframes agent-task-spin { to { transform: rotate(360deg); } }
 .camera-presets { position: absolute; right: 14px; top: 14px; display: flex; gap: 3px; }
 .camera-presets button { padding: 5px 7px; color: #a9aaa3; background: rgba(43,44,39,.84); border: 1px solid #4b4c46; border-radius: 3px; cursor: pointer; font: 7px var(--font-geist-mono); letter-spacing: .08em; }
 .camera-presets button:hover { color: white; border-color: #777870; }

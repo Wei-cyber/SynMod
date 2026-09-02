@@ -132,6 +132,19 @@ export interface ActivityEntry {
   label: string;
   timestamp: number;
   objectIds: string[];
+  durationMs?: number;
+}
+
+export type AgentTaskStatus = 'idle' | 'running' | 'applied' | 'conflict' | 'cancelled' | 'failed';
+
+export interface AgentTaskState {
+  token: string;
+  title: string;
+  status: AgentTaskStatus;
+  startedAt: number;
+  durationMs?: number;
+  affectedObjectIds: string[];
+  error?: string;
 }
 
 export type SceneCommand =
@@ -144,6 +157,7 @@ export type SceneCommand =
       scale?: Vec3;
       geometry?: Partial<PrimitiveGeometry>;
       material?: Partial<StudioMaterial>;
+      objectId?: string;
     }
   | { type: 'import_glb'; name: string; assetDataUrl: string; nodes?: GlbNodeDescriptor[] }
   | { type: 'set_transform'; objectId: string; position?: Vec3; rotation?: Vec3; scale?: Vec3 }
@@ -152,11 +166,11 @@ export type SceneCommand =
   | { type: 'set_visibility'; objectId: string; visible: boolean }
   | { type: 'set_snap'; enabled: boolean }
   | { type: 'set_environment'; environment?: EnvironmentPreset; exposure?: number; backgroundColor?: string; shadows?: boolean }
-  | { type: 'boolean'; operation: BooleanOperation; operandIds: [string, string]; name?: string }
+  | { type: 'boolean'; operation: BooleanOperation; operandIds: [string, string]; name?: string; resultId?: string }
   | { type: 'rename'; objectId: string; name: string }
-  | { type: 'duplicate'; objectId: string; name?: string; offset?: Vec3 }
+  | { type: 'duplicate'; objectId: string; name?: string; offset?: Vec3; resultId?: string }
   | { type: 'delete'; objectId: string }
-  | { type: 'group'; objectIds: string[]; name?: string }
+  | { type: 'group'; objectIds: string[]; name?: string; resultId?: string }
   | { type: 'ungroup'; groupId: string }
   | { type: 'create_checkpoint'; name: string }
   | { type: 'restore_checkpoint'; checkpointId: string }

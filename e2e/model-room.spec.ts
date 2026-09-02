@@ -90,7 +90,7 @@ test('registers the draft WebMCP contract and executes read, mutation, validatio
   await installWebMcpHarness(page);
   await page.goto('/');
 
-  await expect.poll(() => page.evaluate(() => (window as typeof window & { __modelRoomTools: Map<string, WebMcpToolDefinition> }).__modelRoomTools.size)).toBe(29);
+  await expect.poll(() => page.evaluate(() => (window as typeof window & { __modelRoomTools: Map<string, WebMcpToolDefinition> }).__modelRoomTools.size)).toBe(31);
 
   const contracts = await page.evaluate(() => {
     const browserWindow = window as typeof window & {
@@ -182,6 +182,45 @@ test('registers the draft WebMCP contract and executes read, mutation, validatio
   await confirmation.dismiss();
   await expect(deleteAttempt).resolves.toBe('NotAllowedError');
   await expect(page.getByTestId('outliner-row')).toHaveCount(6);
+});
+
+test('completes relative placement and temporary-reference modeling in one call each', async ({ page }) => {
+  await installWebMcpHarness(page);
+  await page.goto('/');
+  await expect.poll(() => page.evaluate(() => (window as typeof window & { __modelRoomTools: Map<string, WebMcpToolDefinition> }).__modelRoomTools.size)).toBe(31);
+
+  const result = await page.evaluate(async () => {
+    const tools = (window as typeof window & { __modelRoomTools: Map<string, WebMcpToolDefinition> }).__modelRoomTools;
+    const signal = new AbortController().signal;
+    const cylinder = await tools.get('add_primitive')!.execute({ primitive_type: 'cylinder', name: 'Cylinder_L', position: [5.5, 2, -7], geometry: { height: 2 } }, { signal }) as { structuredContent: { revision: number } };
+    const cone = await tools.get('add_primitive')!.execute({ primitive_type: 'cone', name: 'Cone on Cylinder L', relative_to: { target: { name: 'Cylinder L' }, placement: 'top', inherit_material: true } }, { signal }) as { structuredContent: { revision: number; objects: Array<{ position: number[] }> } };
+    const transaction = await tools.get('execute_scene_transaction')!.execute({
+      expected_revision: cone.structuredContent.revision,
+      label: 'One-call Boolean',
+      operations: [
+        { action: 'add_primitive', primitive_type: 'box', name: 'Transaction base', result_ref: 'base' },
+        { action: 'add_primitive', primitive_type: 'cylinder', name: 'Transaction cutter', result_ref: 'cutter' },
+        { action: 'boolean', operation: 'subtract', operands: [{ temp_ref: 'base' }, { temp_ref: 'cutter' }], name: 'Transaction result', result_ref: 'result' },
+      ],
+      focus_after: [{ temp_ref: 'result' }],
+    }, { signal }) as { structuredContent: { revision: number; resolvedRefs: Record<string, string> } };
+    await new Promise(requestAnimationFrame);
+    return {
+      cylinderRevision: cylinder.structuredContent.revision,
+      coneRevision: cone.structuredContent.revision,
+      conePosition: cone.structuredContent.objects[0].position,
+      transactionRevision: transaction.structuredContent.revision,
+      resultId: transaction.structuredContent.resolvedRefs.result,
+      indicatorText: document.querySelector('[data-testid="agent-task-indicator"]')?.textContent ?? '',
+    };
+  });
+
+  expect(result.coneRevision).toBe(result.cylinderRevision + 1);
+  expect(result.conePosition).toEqual([5.5, 3.5, -7]);
+  expect(result.transactionRevision).toBe(result.coneRevision + 1);
+  expect(result.resultId).toBeTruthy();
+  expect(result.indicatorText).toContain('Execute Scene Transaction');
+  expect(result.indicatorText).toContain('3 objects');
 });
 
 declare global {

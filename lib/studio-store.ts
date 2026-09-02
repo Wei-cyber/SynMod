@@ -14,6 +14,7 @@ import {
   makeObject,
   PRIMITIVE_LABELS,
   type ActivityEntry,
+  type AgentTaskState,
   type Actor,
   type FeatureKind,
   type PrimitiveGeometry,
@@ -43,6 +44,8 @@ interface StudioState {
   history: SceneDocument[];
   future: SceneDocument[];
   activity: ActivityEntry[];
+  agentTask: AgentTaskState;
+  agentTaskAbort: AbortController | null;
   toolMode: ToolMode;
   webmcpStatus: WebMcpStatus;
   saveState: SaveState;
@@ -54,7 +57,7 @@ interface StudioState {
   readOnly: boolean;
   execute: (command: SceneCommand, actor?: Actor) => { objectIds: string[]; label: string };
   previewTransaction: (commands: SceneCommand[]) => TransactionPreview;
-  executeTransaction: (commands: SceneCommand[], actor?: Actor, label?: string) => { objectIds: string[]; label: string };
+  executeTransaction: (commands: SceneCommand[], actor?: Actor, label?: string, options?: { preserveSelection?: boolean }) => { objectIds: string[]; label: string };
   select: (objectIds: string[], actor?: Actor) => void;
   focus: (objectIds: string[], actor?: Actor) => void;
   undo: (actor?: Actor) => boolean;
@@ -69,6 +72,9 @@ interface StudioState {
   setWebMcpStatus: (status: WebMcpStatus) => void;
   setSaveState: (state: SaveState) => void;
   setError: (error: string | null) => void;
+  startAgentTask: (task: AgentTaskState, controller: AbortController) => void;
+  finishAgentTask: (token: string, status: AgentTaskState['status'], durationMs: number, objectIds?: string[], error?: string) => void;
+  cancelAgentTask: () => void;
 }
 
 function cloneDoc(doc: SceneDocument): SceneDocument {
@@ -133,8 +139,8 @@ function objectById(doc: SceneDocument, id: string) {
   return object;
 }
 
-function activity(actor: Actor, label: string, objectIds: string[]): ActivityEntry {
-  return { id: createId('activity'), actor, label, timestamp: Date.now(), objectIds };
+function activity(actor: Actor, label: string, objectIds: string[], durationMs?: number): ActivityEntry {
+  return { id: createId('activity'), actor, label, timestamp: Date.now(), objectIds, durationMs };
 }
 
 function matrixFor(object: StudioObject) {
@@ -215,6 +221,7 @@ export function applySceneCommand(doc: SceneDocument, command: SceneCommand) {
   switch (command.type) {
     case 'add_primitive': {
       const object = makeObject(command.primitiveType, command.name?.trim() || PRIMITIVE_LABELS[command.primitiveType], {
+        ...(command.objectId ? { id: command.objectId } : {}),
         position: command.position ? finiteVec(command.position, 'Position') : [0, 0.5, 0],
         rotation: command.rotation ? finiteVec(command.rotation, 'Rotation') : [0, 0, 0],
         scale: command.scale ? finiteVec(command.scale, 'Scale', true) : [1, 1, 1],
@@ -325,6 +332,7 @@ export function applySceneCommand(doc: SceneDocument, command: SceneCommand) {
       }
       if (left.parentId !== right.parentId) throw new Error('Boolean operands must share the same parent.');
       const result = makeObject('boolean', command.name?.trim() || `${left.name} ${command.operation}`, {
+        ...(command.resultId ? { id: command.resultId } : {}),
         position: [0, 0, 0],
         parentId: left.parentId,
         material: left.material,
@@ -355,7 +363,7 @@ export function applySceneCommand(doc: SceneDocument, command: SceneCommand) {
       };
       visit(source.id);
       const idMap = new Map<string, string>();
-      subtree.forEach((id) => idMap.set(id, createId()));
+      subtree.forEach((id) => idMap.set(id, id === source.id && command.resultId ? command.resultId : createId()));
       const offset = command.offset ? finiteVec(command.offset, 'Offset') : defaultOffset();
       const clones = doc.objects.filter((item) => subtree.has(item.id)).map((item) => {
         const copy = structuredClone(item);
@@ -405,7 +413,7 @@ export function applySceneCommand(doc: SceneDocument, command: SceneCommand) {
       const parentId = objects[0].parentId;
       if (objects.some((item) => item.parentId !== parentId)) throw new Error('Objects must share the same parent to be grouped.');
       const center = objects.reduce<Vec3>((sum, item) => [sum[0] + item.position[0], sum[1] + item.position[1], sum[2] + item.position[2]], [0, 0, 0]).map((value) => value / objects.length) as Vec3;
-      const group = makeObject('group', command.name?.trim() || 'Group', { position: center, parentId });
+      const group = makeObject('group', command.name?.trim() || 'Group', { ...(command.resultId ? { id: command.resultId } : {}), position: center, parentId });
       doc.objects.push(group);
       objects.forEach((item) => {
         item.parentId = group.id;
@@ -504,6 +512,8 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     { id: 'welcome-agent', actor: 'agent', label: 'Scene tools are ready', timestamp: Date.now() - 8_000, objectIds: [] },
     { id: 'welcome-human', actor: 'human', label: 'Opened Lamp Study', timestamp: Date.now() - 65_000, objectIds: [] },
   ],
+  agentTask: { token: 'idle', title: 'Agent ready', status: 'idle', startedAt: 0, affectedObjectIds: [] },
+  agentTaskAbort: null,
   toolMode: 'translate',
   webmcpStatus: 'checking',
   saveState: 'saved',
@@ -535,7 +545,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     return result;
   },
   previewTransaction(commands) {
-    if (!commands.length || commands.length > 20) throw new Error('A transaction must contain between 1 and 20 operations.');
+    if (!commands.length || commands.length > 50) throw new Error('A transaction must contain between 1 and 50 operations.');
     const state = get();
     const next = cloneDoc(state.doc);
     const results = commands.map((command) => applySceneCommand(next, command));
@@ -548,8 +558,8 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       objects: affectedObjectIds.map((id) => next.objects.find((object) => object.id === id)).filter(Boolean) as StudioObject[],
     };
   },
-  executeTransaction(commands, actor = 'human', label) {
-    if (!commands.length || commands.length > 20) throw new Error('A transaction must contain between 1 and 20 operations.');
+  executeTransaction(commands, actor = 'human', label, options) {
+    if (!commands.length || commands.length > 50) throw new Error('A transaction must contain between 1 and 50 operations.');
     const current = get();
     if (current.readOnly) throw new Error('This is a read-only shared project. Make an editable copy before changing it.');
     const before = cloneDoc(current.doc);
@@ -563,7 +573,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       doc: next,
       history: [...current.history, before].slice(-100),
       future: [],
-      selection: objectIds.filter((id) => next.objects.some((object) => object.id === id)).slice(0, 1),
+      selection: options?.preserveSelection ? current.selection : objectIds.filter((id) => next.objects.some((object) => object.id === id)).slice(0, 1),
       activity: [activity(actor, resultLabel, objectIds), ...current.activity].slice(0, 80),
       lastAgentChange: actor === 'agent' ? { token: Date.now(), objectIds } : current.lastAgentChange,
       saveState: 'saving',
@@ -670,6 +680,23 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   setWebMcpStatus(webmcpStatus) { set({ webmcpStatus }); },
   setSaveState(saveState) { set({ saveState }); },
   setError(error) { set({ error }); },
+  startAgentTask(agentTask, agentTaskAbort) { set({ agentTask, agentTaskAbort }); },
+  finishAgentTask(token, status, durationMs, objectIds = [], error) {
+    set((state) => {
+      if (state.agentTask.token !== token) return state;
+      const activityIndex = state.activity.findLastIndex((entry) => entry.actor === 'agent' && entry.timestamp >= state.agentTask.startedAt);
+      const nextActivity = activityIndex < 0 ? state.activity : state.activity.map((entry, index) => index === activityIndex ? { ...entry, durationMs } : entry);
+      return {
+        agentTask: { ...state.agentTask, status, durationMs, affectedObjectIds: objectIds, error },
+        agentTaskAbort: null,
+        activity: nextActivity,
+      };
+    });
+  },
+  cancelAgentTask() {
+    const controller = get().agentTaskAbort;
+    if (controller && !controller.signal.aborted) controller.abort(new DOMException('Cancelled in SynMod.', 'AbortError'));
+  },
 }));
 
 export function getObjectSnapshot(objectId: string) {

@@ -102,6 +102,14 @@ function boxPayload(box: Box3 | null) {
   return { min: box.min.toArray() as Vec3, max: box.max.toArray() as Vec3, size: box.getSize(new Vector3()).toArray() as Vec3 };
 }
 
+export type WorldBounds = NonNullable<ReturnType<typeof boxPayload>>;
+
+export function getObjectWorldBounds(doc: SceneDocument, objectId: string): WorldBounds | null {
+  const object = doc.objects.find((item) => item.id === objectId);
+  if (!object) return null;
+  return boxPayload(objectBox(doc, object, new Map(), new Map()));
+}
+
 export function buildFeatureTree(doc: SceneDocument): FeatureTreeNode[] {
   const recordsByObject = new Map<string, typeof doc.features>();
   for (const record of doc.features) {

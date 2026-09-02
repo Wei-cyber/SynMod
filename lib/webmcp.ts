@@ -1,9 +1,10 @@
 import { z } from 'zod';
 
-import { buildFeatureTree, compactObjectSnapshot } from '@/lib/scene-analysis';
+import { buildFeatureTree, compactObjectSnapshot, getObjectWorldBounds } from '@/lib/scene-analysis';
+import { dependencyClosure, findSceneObjects, objectIndexEntry, relativePosition, resolveObjectTarget, type ObjectTarget, type RelativePlacement } from '@/lib/scene-targeting';
 import { createReadOnlyShareUrl } from '@/lib/share-links';
-import { getCheckpointComparison, getObjectSnapshot, getSceneHealth, useStudioStore } from '@/lib/studio-store';
-import type { PrimitiveGeometry, SceneCommand, StudioMaterial } from '@/lib/studio-types';
+import { applySceneCommand, getCheckpointComparison, getObjectSnapshot, getSceneHealth, useStudioStore } from '@/lib/studio-store';
+import { createId, DEFAULT_GEOMETRY, DEFAULT_MATERIAL, makeObject, type EnvironmentPreset, type ObjectType, type PrimitiveGeometry, type SceneCommand, type SceneDocument, type StudioMaterial, type Vec3 } from '@/lib/studio-types';
 
 const emptySchema = { type: 'object', properties: {}, additionalProperties: false };
 const vec3Schema = {
@@ -103,10 +104,43 @@ type ToolAnnotations = {
 
 type ToolExecuteOptions = { signal: AbortSignal };
 
+export class SceneConflictError extends Error {
+  readonly code = 'scene_conflict';
+  constructor(
+    message: string,
+    readonly expectedRevision: number,
+    readonly currentRevision: number,
+    readonly conflictingObjectIds: string[],
+  ) {
+    super(message);
+    this.name = 'SceneConflictError';
+  }
+}
+
 function throwIfAborted(signal: AbortSignal) {
   if (!signal.aborted) return;
   if (signal.reason !== undefined) throw signal.reason;
   throw new DOMException('The tool execution was cancelled.', 'AbortError');
+}
+
+function combinedSignal(signals: AbortSignal[]) {
+  const controller = new AbortController();
+  const listeners = signals.map((signal) => {
+    const abort = () => controller.abort(signal.reason ?? new DOMException('The tool execution was cancelled.', 'AbortError'));
+    if (signal.aborted) abort();
+    else signal.addEventListener('abort', abort, { once: true });
+    return { signal, abort };
+  });
+  return {
+    signal: controller.signal,
+    dispose: () => listeners.forEach(({ signal, abort }) => signal.removeEventListener('abort', abort)),
+  };
+}
+
+function resultObjectIds(value: unknown) {
+  if (!value || typeof value !== 'object' || !('structuredContent' in value)) return [];
+  const structured = (value as { structuredContent?: { affectedObjectIds?: unknown } }).structuredContent;
+  return Array.isArray(structured?.affectedObjectIds) ? structured.affectedObjectIds.filter((id): id is string => typeof id === 'string') : [];
 }
 
 function abortable<T>(promise: Promise<T>, signal: AbortSignal) {
@@ -140,9 +174,10 @@ function tool(
   execute: (input: object, options: ToolExecuteOptions) => unknown,
   annotations: ToolAnnotations = {},
 ) {
+  const title = titleForTool(name);
   return {
     name,
-    title: titleForTool(name),
+    title,
     description,
     inputSchema,
     annotations: {
@@ -150,9 +185,24 @@ function tool(
       untrustedContentHint: annotations.untrustedContentHint ?? true,
     },
     execute: async (input: object, options?: ToolExecuteOptions) => {
-      const signal = options?.signal ?? new AbortController().signal;
-      throwIfAborted(signal);
-      return execute(input, { signal });
+      const hostSignal = options?.signal ?? new AbortController().signal;
+      const localController = new AbortController();
+      const combined = combinedSignal([hostSignal, localController.signal]);
+      const token = createId('agent-task');
+      const startedAt = Date.now();
+      useStudioStore.getState().startAgentTask({ token, title, status: 'running', startedAt, affectedObjectIds: [] }, localController);
+      try {
+        throwIfAborted(combined.signal);
+        const value = await execute(input, { signal: combined.signal });
+        useStudioStore.getState().finishAgentTask(token, 'applied', Date.now() - startedAt, resultObjectIds(value));
+        return value;
+      } catch (error) {
+        const status = error instanceof SceneConflictError ? 'conflict' : error instanceof DOMException && error.name === 'AbortError' ? 'cancelled' : 'failed';
+        useStudioStore.getState().finishAgentTask(token, status, Date.now() - startedAt, error instanceof SceneConflictError ? error.conflictingObjectIds : [], error instanceof Error ? error.message : String(error));
+        throw error;
+      } finally {
+        combined.dispose();
+      }
     },
   } satisfies WebMcpToolDefinition;
 }
@@ -201,6 +251,254 @@ const transactionOperation = z.object({
   operation: z.enum(['union', 'subtract', 'intersect']).optional(), operand_ids: z.tuple([objectId, objectId]).optional(),
 });
 const transactionSchema = z.object({ expected_revision: z.number().int().nonnegative().optional(), label: z.string().max(120).optional(), operations: z.array(transactionOperation).min(1).max(20) });
+
+const objectTargetProperties = {
+  object_id: objectIdSchema,
+  name: { type: 'string', minLength: 1, maxLength: 80 },
+  temp_ref: { type: 'string', minLength: 1, maxLength: 80 },
+};
+const objectTargetJsonSchema = {
+  type: 'object',
+  properties: objectTargetProperties,
+  oneOf: [{ required: ['object_id'] }, { required: ['name'] }, { required: ['temp_ref'] }],
+  additionalProperties: false,
+};
+const objectTargetInput = z.object({
+  object_id: objectId.optional(),
+  name: z.string().min(1).max(80).optional(),
+  temp_ref: z.string().min(1).max(80).optional(),
+}).refine((value) => [value.object_id, value.name, value.temp_ref].filter((item) => item !== undefined).length === 1, 'Provide exactly one of object_id, name, or temp_ref.');
+
+const relativePlacementProperties = {
+  target: objectTargetJsonSchema,
+  placement: { type: 'string', enum: ['top', 'bottom', 'left', 'right', 'front', 'back', 'center'] },
+  gap: { type: 'number', minimum: -1000, maximum: 1000 },
+  inherit_material: { type: 'boolean' },
+};
+const relativePlacementInput = z.object({
+  target: objectTargetInput,
+  placement: z.enum(['top', 'bottom', 'left', 'right', 'front', 'back', 'center']).default('top'),
+  gap: z.number().min(-1000).max(1000).default(0),
+  inherit_material: z.boolean().default(false),
+});
+
+const fastOperationJsonSchema = {
+  type: 'object',
+  properties: {
+    action: { type: 'string', enum: ['add_primitive', 'set_transform', 'set_geometry', 'set_material', 'set_visibility', 'rename', 'duplicate', 'boolean', 'group', 'ungroup', 'set_environment'] },
+    target: objectTargetJsonSchema,
+    targets: { type: 'array', items: objectTargetJsonSchema, minItems: 2, uniqueItems: true },
+    operands: { type: 'array', items: objectTargetJsonSchema, minItems: 2, maxItems: 2 },
+    primitive_type: { type: 'string', enum: primitiveEnum },
+    name: { type: 'string', maxLength: 80 },
+    result_ref: { type: 'string', minLength: 1, maxLength: 80 },
+    position: vec3Schema,
+    rotation_degrees: vec3Schema,
+    scale: vec3Schema,
+    offset: vec3Schema,
+    geometry: { type: 'object', properties: geometryProperties, additionalProperties: false },
+    material: { type: 'object', properties: materialProperties, additionalProperties: false },
+    visible: { type: 'boolean' },
+    operation: { type: 'string', enum: ['union', 'subtract', 'intersect'] },
+    relative_to: { type: 'object', properties: relativePlacementProperties, required: ['target'], additionalProperties: false },
+    environment: { type: 'string', enum: environmentEnum },
+    exposure: { type: 'number', minimum: 0.1, maximum: 3 },
+    background_color: { type: 'string', pattern: '^#[0-9A-Fa-f]{6}$' },
+    shadows: { type: 'boolean' },
+  },
+  required: ['action'],
+  additionalProperties: false,
+};
+
+const fastOperationInput = z.object({
+  action: z.enum(['add_primitive', 'set_transform', 'set_geometry', 'set_material', 'set_visibility', 'rename', 'duplicate', 'boolean', 'group', 'ungroup', 'set_environment']),
+  target: objectTargetInput.optional(),
+  targets: z.array(objectTargetInput).min(2).optional(),
+  operands: z.tuple([objectTargetInput, objectTargetInput]).optional(),
+  primitive_type: z.enum(['box', 'sphere', 'cylinder', 'cone', 'torus']).optional(),
+  name: z.string().max(80).optional(),
+  result_ref: z.string().min(1).max(80).optional(),
+  position: vec3.optional(), rotation_degrees: vec3.optional(), scale: vec3.optional(), offset: vec3.optional(),
+  geometry: geometryInput.optional(), material: materialInput.optional(), visible: z.boolean().optional(),
+  operation: z.enum(['union', 'subtract', 'intersect']).optional(), relative_to: relativePlacementInput.optional(),
+  environment: z.enum(['studio', 'sunset', 'warehouse', 'night']).optional(), exposure: z.number().min(0.1).max(3).optional(), background_color: hex.optional(), shadows: z.boolean().optional(),
+});
+
+const fastTransactionInput = z.object({
+  expected_revision: z.number().int().nonnegative().optional(),
+  label: z.string().max(120).optional(),
+  operations: z.array(fastOperationInput).min(1).max(50),
+  select_after: z.array(objectTargetInput).max(100).optional(),
+  focus_after: z.array(objectTargetInput).min(1).max(100).optional(),
+});
+
+function targetValue(input: z.infer<typeof objectTargetInput>): ObjectTarget {
+  return { objectId: input.object_id, name: input.name, tempRef: input.temp_ref };
+}
+
+function makeRelativeAddCommand(
+  doc: SceneDocument,
+  temporaryIds: Map<string, string>,
+  input: {
+    primitiveType: 'box' | 'sphere' | 'cylinder' | 'cone' | 'torus';
+    name?: string;
+    position?: Vec3;
+    rotation?: Vec3;
+    scale?: Vec3;
+    geometry?: Partial<PrimitiveGeometry>;
+    material?: Partial<StudioMaterial>;
+    relativeTo?: z.infer<typeof relativePlacementInput>;
+    objectId?: string;
+  },
+) {
+  const objectIdValue = input.objectId ?? createId();
+  let material = input.material;
+  let position = input.position;
+  let anchorId: string | undefined;
+  if (input.relativeTo) {
+    const anchor = resolveObjectTarget(doc, targetValue(input.relativeTo.target), temporaryIds);
+    anchorId = anchor.id;
+    if (input.relativeTo.inherit_material) {
+      const explicitMaterial = Object.fromEntries(Object.entries(material ?? {}).filter(([, value]) => value !== undefined)) as Partial<StudioMaterial>;
+      material = { ...anchor.material, ...explicitMaterial };
+    }
+    const prototype = makeObject(input.primitiveType, input.name ?? input.primitiveType, {
+      id: objectIdValue,
+      position: [0, 0, 0],
+      rotation: input.rotation ?? [0, 0, 0],
+      scale: input.scale ?? [1, 1, 1],
+      geometry: { ...DEFAULT_GEOMETRY, ...(input.primitiveType === 'cone' ? { radiusTop: 0.02 } : {}), ...input.geometry },
+      material: { ...DEFAULT_MATERIAL, ...material },
+    });
+    const prototypeDoc = structuredClone(doc);
+    prototypeDoc.objects.push(prototype);
+    const targetBounds = getObjectWorldBounds(doc, anchor.id);
+    const prototypeBounds = getObjectWorldBounds(prototypeDoc, prototype.id);
+    if (!targetBounds) throw new Error(`${anchor.name} does not expose usable world bounds for relative placement.`);
+    if (!prototypeBounds) throw new Error('The new primitive does not expose usable bounds.');
+    position = relativePosition(targetBounds, prototypeBounds, input.relativeTo.placement as RelativePlacement, input.relativeTo.gap);
+  }
+  return {
+    command: {
+      type: 'add_primitive', primitiveType: input.primitiveType, name: input.name, position, rotation: input.rotation, scale: input.scale,
+      geometry: input.geometry, material, objectId: objectIdValue,
+    } satisfies SceneCommand,
+    anchorId,
+  };
+}
+
+function reserveResultId(resultRef: string | undefined, temporaryIds: Map<string, string>) {
+  const id = createId();
+  if (!resultRef) return id;
+  if (temporaryIds.has(resultRef)) throw new Error(`Temporary object reference is already in use: ${resultRef}`);
+  temporaryIds.set(resultRef, id);
+  return id;
+}
+
+function compileFastTransaction(doc: SceneDocument, operations: z.infer<typeof fastOperationInput>[]) {
+  const working = structuredClone(doc);
+  const temporaryIds = new Map<string, string>();
+  const commands: SceneCommand[] = [];
+  const dependencyIds = new Set<string>();
+  let settingsTouched = false;
+  const resolve = (target: z.infer<typeof objectTargetInput> | undefined) => {
+    if (!target) throw new Error('This operation requires a target.');
+    const object = resolveObjectTarget(working, targetValue(target), temporaryIds);
+    if (doc.objects.some((item) => item.id === object.id)) dependencyIds.add(object.id);
+    return object;
+  };
+  const append = (command: SceneCommand) => {
+    applySceneCommand(working, command);
+    commands.push(command);
+  };
+
+  for (const operation of operations) {
+    switch (operation.action) {
+      case 'add_primitive': {
+        if (!operation.primitive_type) throw new Error('add_primitive requires primitive_type.');
+        const resultId = reserveResultId(operation.result_ref, temporaryIds);
+        const built = makeRelativeAddCommand(working, temporaryIds, {
+          primitiveType: operation.primitive_type, name: operation.name, position: operation.position, rotation: operation.rotation_degrees,
+          scale: operation.scale, geometry: operation.geometry ? geometryPatch(operation.geometry) : undefined,
+          material: operation.material ? materialPatch(operation.material) : undefined, relativeTo: operation.relative_to, objectId: resultId,
+        });
+        if (built.anchorId && doc.objects.some((item) => item.id === built.anchorId)) dependencyIds.add(built.anchorId);
+        append(built.command);
+        break;
+      }
+      case 'set_transform': {
+        const object = resolve(operation.target);
+        append({ type: 'set_transform', objectId: object.id, position: operation.position, rotation: operation.rotation_degrees, scale: operation.scale });
+        break;
+      }
+      case 'set_geometry': {
+        const object = resolve(operation.target);
+        if (!operation.geometry) throw new Error('set_geometry requires geometry.');
+        append({ type: 'set_geometry', objectId: object.id, geometry: geometryPatch(operation.geometry) });
+        break;
+      }
+      case 'set_material': {
+        const object = resolve(operation.target);
+        if (!operation.material) throw new Error('set_material requires material.');
+        append({ type: 'set_material', objectId: object.id, material: materialPatch(operation.material) });
+        break;
+      }
+      case 'set_visibility': {
+        const object = resolve(operation.target);
+        if (operation.visible === undefined) throw new Error('set_visibility requires visible.');
+        append({ type: 'set_visibility', objectId: object.id, visible: operation.visible });
+        break;
+      }
+      case 'rename': {
+        const object = resolve(operation.target);
+        if (!operation.name) throw new Error('rename requires name.');
+        append({ type: 'rename', objectId: object.id, name: operation.name });
+        break;
+      }
+      case 'duplicate': {
+        const object = resolve(operation.target);
+        append({ type: 'duplicate', objectId: object.id, name: operation.name, offset: operation.offset, resultId: reserveResultId(operation.result_ref, temporaryIds) });
+        break;
+      }
+      case 'boolean': {
+        if (!operation.operands || !operation.operation) throw new Error('boolean requires two operands and an operation.');
+        const operands = operation.operands.map((target) => resolve(target));
+        append({ type: 'boolean', operation: operation.operation, operandIds: [operands[0].id, operands[1].id], name: operation.name, resultId: reserveResultId(operation.result_ref, temporaryIds) });
+        break;
+      }
+      case 'group': {
+        if (!operation.targets) throw new Error('group requires targets.');
+        const targets = operation.targets.map((target) => resolve(target));
+        append({ type: 'group', objectIds: targets.map((object) => object.id), name: operation.name, resultId: reserveResultId(operation.result_ref, temporaryIds) });
+        break;
+      }
+      case 'ungroup': {
+        const object = resolve(operation.target);
+        append({ type: 'ungroup', groupId: object.id });
+        break;
+      }
+      case 'set_environment': {
+        settingsTouched = true;
+        append({ type: 'set_environment', environment: operation.environment as EnvironmentPreset | undefined, exposure: operation.exposure, backgroundColor: operation.background_color, shadows: operation.shadows });
+        break;
+      }
+    }
+  }
+  return { commands, temporaryIds, dependencyIds, settingsTouched };
+}
+
+function assertTransactionCanRebase(doc: SceneDocument, expectedRevision: number | undefined, dependencyIds: Set<string>, settingsTouched: boolean) {
+  if (expectedRevision === undefined || expectedRevision === doc.revision) return;
+  if (expectedRevision > doc.revision) throw new SceneConflictError(`Expected revision ${expectedRevision} is newer than the current scene revision ${doc.revision}.`, expectedRevision, doc.revision, []);
+  const laterFeatures = doc.features.filter((feature) => feature.revision > expectedRevision);
+  if (!laterFeatures.length) throw new SceneConflictError('The scene changed outside the retained feature history, so this transaction cannot be safely rebased.', expectedRevision, doc.revision, []);
+  const dependencies = dependencyClosure(doc, dependencyIds);
+  const conflicts = [...new Set(laterFeatures.flatMap((feature) => feature.objectIds).filter((id) => dependencies.has(id)))];
+  const settingsConflict = settingsTouched && laterFeatures.some((feature) => feature.kind === 'environment');
+  if (conflicts.length || settingsConflict) {
+    throw new SceneConflictError(`Scene conflict at revision ${doc.revision}. Read the conflicting objects and retry.`, expectedRevision, doc.revision, conflicts);
+  }
+}
 
 function operationToCommand(operation: z.infer<typeof transactionOperation>): SceneCommand {
   switch (operation.action) {
@@ -260,6 +558,27 @@ export async function registerWebMcpTools() {
       const payload = { revision: state.doc.revision, selectedObjectIds: state.selection, objects };
       return { content: [{ type: 'text', text: JSON.stringify(payload) }], structuredContent: payload };
     }, { readOnlyHint: true }),
+    tool('find_objects', 'Find scene objects by normalized human-readable name, type, visibility, parent, or current selection. Returns compact IDs, transforms, and world bounds without changing the scene.', {
+      type: 'object', properties: {
+        query: { type: 'string', minLength: 1, maxLength: 80 },
+        match: { type: 'string', enum: ['normalized_exact', 'contains'] },
+        types: { type: 'array', items: { type: 'string', enum: ['box', 'sphere', 'cylinder', 'cone', 'torus', 'boolean', 'group', 'glb', 'glb_node'] }, uniqueItems: true },
+        visible: { type: 'boolean' },
+        parent_id: { anyOf: [{ type: 'string', minLength: 1 }, { type: 'null' }] },
+        selection_only: { type: 'boolean' },
+        limit: { type: 'integer', minimum: 1, maximum: 50 },
+      }, additionalProperties: false,
+    }, (input) => {
+      const parsed = z.object({
+        query: z.string().min(1).max(80).optional(), match: z.enum(['normalized_exact', 'contains']).default('normalized_exact'),
+        types: z.array(z.enum(['box', 'sphere', 'cylinder', 'cone', 'torus', 'boolean', 'group', 'glb', 'glb_node'])).optional(),
+        visible: z.boolean().optional(), parent_id: z.string().min(1).nullable().optional(), selection_only: z.boolean().default(false), limit: z.number().int().min(1).max(50).default(20),
+      }).parse(input);
+      const state = useStudioStore.getState();
+      const objects = findSceneObjects(state.doc, { query: parsed.query, match: parsed.match, types: parsed.types as ObjectType[] | undefined, visible: parsed.visible, parentId: parsed.parent_id, selectionOnly: parsed.selection_only, selectedIds: state.selection, limit: parsed.limit });
+      const payload = { revision: state.doc.revision, count: objects.length, objects: objects.map((object) => objectIndexEntry(state.doc, object)) };
+      return { content: [{ type: 'text', text: JSON.stringify(payload) }], structuredContent: payload };
+    }, { readOnlyHint: true }),
     tool('inspect_scene_health', 'Inspect object counts, hidden feature inputs, imported nodes, textured objects, and modeling warnings without changing the scene.', emptySchema, () => {
       const payload = getSceneHealth();
       return { content: [{ type: 'text', text: JSON.stringify(payload) }], structuredContent: payload };
@@ -287,11 +606,14 @@ export async function registerWebMcpTools() {
         geometry: { type: 'object', properties: geometryProperties, additionalProperties: false },
         material: { type: 'object', properties: materialProperties, additionalProperties: false },
         color: materialProperties.color, roughness: materialProperties.roughness, metalness: materialProperties.metalness,
+        relative_to: { type: 'object', properties: relativePlacementProperties, required: ['target'], additionalProperties: false },
       }, required: ['primitive_type'], additionalProperties: false,
     }, (input) => {
-      const parsed = z.object({ primitive_type: z.enum(['box', 'sphere', 'cylinder', 'cone', 'torus']), name: z.string().max(80).optional(), position: vec3.optional(), rotation_degrees: vec3.optional(), scale: vec3.optional(), geometry: geometryInput.optional(), material: materialInput.optional(), color: hex.optional(), roughness: z.number().min(0).max(1).optional(), metalness: z.number().min(0).max(1).optional() }).parse(input);
+      const parsed = z.object({ primitive_type: z.enum(['box', 'sphere', 'cylinder', 'cone', 'torus']), name: z.string().max(80).optional(), position: vec3.optional(), rotation_degrees: vec3.optional(), scale: vec3.optional(), geometry: geometryInput.optional(), material: materialInput.optional(), color: hex.optional(), roughness: z.number().min(0).max(1).optional(), metalness: z.number().min(0).max(1).optional(), relative_to: relativePlacementInput.optional() }).parse(input);
       const nestedMaterial = parsed.material ? materialPatch(parsed.material) : {};
-      return run({ type: 'add_primitive', primitiveType: parsed.primitive_type, name: parsed.name, position: parsed.position, rotation: parsed.rotation_degrees, scale: parsed.scale, geometry: parsed.geometry ? geometryPatch(parsed.geometry) : undefined, material: { ...nestedMaterial, color: parsed.color ?? nestedMaterial.color, roughness: parsed.roughness ?? nestedMaterial.roughness, metalness: parsed.metalness ?? nestedMaterial.metalness } });
+      const material = { ...nestedMaterial, color: parsed.color ?? nestedMaterial.color, roughness: parsed.roughness ?? nestedMaterial.roughness, metalness: parsed.metalness ?? nestedMaterial.metalness };
+      const built = makeRelativeAddCommand(useStudioStore.getState().doc, new Map(), { primitiveType: parsed.primitive_type, name: parsed.name, position: parsed.position, rotation: parsed.rotation_degrees, scale: parsed.scale, geometry: parsed.geometry ? geometryPatch(parsed.geometry) : undefined, material, relativeTo: parsed.relative_to });
+      return run(built.command);
     }),
     tool('set_object_transform', 'Set position, rotation in degrees, or scale for one scene object. Applies immediately and is reversible.', {
       type: 'object', properties: { object_id: objectIdSchema, position: vec3Schema, rotation_degrees: vec3Schema, scale: vec3Schema }, required: ['object_id'], additionalProperties: false,
@@ -340,6 +662,49 @@ export async function registerWebMcpTools() {
       if (state.doc.revision !== parsed.expected_revision) throw new Error(`Scene changed after preview. Expected revision ${parsed.expected_revision}, current revision is ${state.doc.revision}.`);
       const result = state.executeTransaction(parsed.operations.map(operationToCommand), 'agent', parsed.label);
       return response(result.label, result.objectIds);
+    }),
+    tool('execute_scene_transaction', 'Validate and immediately apply 1–50 safe reversible modeling operations as one visible revision and one undo step. Supports human-readable targets, temporary result references, disjoint-edit rebasing, and optional selection or focus after commit.', {
+      type: 'object', properties: {
+        expected_revision: { type: 'integer', minimum: 0, description: 'Optional optimistic concurrency boundary. Unrelated later edits are safely rebased.' },
+        label: { type: 'string', maxLength: 120 },
+        operations: { type: 'array', minItems: 1, maxItems: 50, items: fastOperationJsonSchema },
+        select_after: { type: 'array', items: objectTargetJsonSchema, maxItems: 100 },
+        focus_after: { type: 'array', items: objectTargetJsonSchema, minItems: 1, maxItems: 100 },
+      }, required: ['operations'], additionalProperties: false,
+    }, (input, { signal }) => {
+      const parsed = fastTransactionInput.parse(input);
+      const state = useStudioStore.getState();
+      let compiled: ReturnType<typeof compileFastTransaction>;
+      try {
+        compiled = compileFastTransaction(state.doc, parsed.operations);
+      } catch (error) {
+        if (parsed.expected_revision !== undefined && parsed.expected_revision !== state.doc.revision && error instanceof Error && /not found|ambiguous|no longer exists/i.test(error.message)) {
+          throw new SceneConflictError(`Scene conflict at revision ${state.doc.revision}: ${error.message}`, parsed.expected_revision, state.doc.revision, []);
+        }
+        throw error;
+      }
+      assertTransactionCanRebase(state.doc, parsed.expected_revision, compiled.dependencyIds, compiled.settingsTouched);
+      throwIfAborted(signal);
+      const result = state.executeTransaction(compiled.commands, 'agent', parsed.label, { preserveSelection: true });
+      const committed = useStudioStore.getState();
+      const resolveAfter = (targets: z.infer<typeof objectTargetInput>[] | undefined) => targets?.map((target) => resolveObjectTarget(committed.doc, targetValue(target), compiled.temporaryIds).id) ?? [];
+      const selectedIds = resolveAfter(parsed.select_after);
+      const focusedIds = resolveAfter(parsed.focus_after);
+      if (parsed.select_after) committed.select(selectedIds, 'agent');
+      if (focusedIds.length) committed.focus(focusedIds, 'agent');
+      const objects = result.objectIds.map(getObjectSnapshot).map(compactObjectSnapshot).filter(Boolean);
+      const payload = {
+        ok: true,
+        summary: result.label,
+        revision: useStudioStore.getState().doc.revision,
+        affectedObjectIds: result.objectIds,
+        objects,
+        resolvedRefs: Object.fromEntries(compiled.temporaryIds),
+        rebasedFromRevision: parsed.expected_revision !== undefined && parsed.expected_revision !== state.doc.revision ? parsed.expected_revision : undefined,
+        selectedObjectIds: parsed.select_after ? selectedIds : undefined,
+        focusedObjectIds: parsed.focus_after ? focusedIds : undefined,
+      };
+      return { content: [{ type: 'text', text: JSON.stringify(payload) }], structuredContent: payload };
     }),
     tool('create_checkpoint', 'Create a named local checkpoint of the complete editable scene. This changes project history, autosaves locally, and is reversible.', {
       type: 'object', properties: { name: { type: 'string', minLength: 1, maxLength: 80 } }, required: ['name'], additionalProperties: false,
@@ -410,7 +775,7 @@ export async function registerWebMcpTools() {
   ];
 
   try {
-    for (const definition of definitions) await modelContext.registerTool(definition, { signal: controller.signal });
+    await Promise.all(definitions.map((definition) => modelContext.registerTool(definition, { signal: controller.signal })));
     useStudioStore.getState().setWebMcpStatus('ready');
   } catch (error) {
     controller.abort();

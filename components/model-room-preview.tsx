@@ -430,8 +430,36 @@ function ActivityFeed() {
       {activity.map((item) => {
         const age = Math.max(0, now - item.timestamp);
         const time = age < 15_000 ? 'now' : age < 60_000 ? `${Math.floor(age / 1000)}s` : `${Math.floor(age / 60_000)}m`;
-        return <div className={`activity-item ${item.actor === 'agent' ? 'agent' : ''}`} key={item.id}><span>{item.actor === 'agent' ? 'A' : 'Y'}</span><div><strong>{item.actor === 'agent' ? 'Agent' : 'You'}</strong><p>{item.label}</p></div><time>{time}</time></div>;
+        const timing = item.durationMs === undefined ? time : item.durationMs < 1000 ? `${item.durationMs}ms` : `${(item.durationMs / 1000).toFixed(1)}s`;
+        return <div className={`activity-item ${item.actor === 'agent' ? 'agent' : ''}`} key={item.id}><span>{item.actor === 'agent' ? 'A' : 'Y'}</span><div><strong>{item.actor === 'agent' ? 'Agent' : 'You'}</strong><p>{item.label}</p></div><time>{timing}</time></div>;
       })}
+    </div>
+  );
+}
+
+function AgentTaskIndicator() {
+  const task = useStudioStore((state) => state.agentTask);
+  const cancel = useStudioStore((state) => state.cancelAgentTask);
+  const undo = useStudioStore((state) => state.undo);
+  const running = task.status === 'running';
+  const affected = task.affectedObjectIds.length;
+  const detail = task.status === 'idle'
+    ? 'Fast scene tools ready'
+    : running
+      ? 'Validating and applying'
+      : task.status === 'applied'
+        ? `${affected} object${affected === 1 ? '' : 's'} · ${task.durationMs ?? 0}ms`
+        : task.status === 'conflict'
+          ? 'Scene changed on a related object'
+          : task.status === 'cancelled'
+            ? 'Cancelled before commit'
+            : task.error ?? 'Request failed';
+  return (
+    <div className={`agent-pulse task-${task.status}`} aria-live="polite" data-testid="agent-task-indicator">
+      {task.status === 'applied' ? <Check /> : task.status === 'failed' || task.status === 'conflict' ? <AlertCircle /> : <Sparkles />}
+      <span><strong>{task.status === 'idle' ? 'Agent ready' : task.title}</strong> · {detail}</span>
+      {running && <button type="button" onClick={cancel}>Cancel</button>}
+      {task.status === 'applied' && affected > 0 && <button type="button" onClick={() => undo()}>Undo</button>}
     </div>
   );
 }
@@ -588,7 +616,6 @@ function Viewport() {
   const snap = useStudioStore((state) => state.doc.settings.snapEnabled);
   const setSnap = useStudioStore((state) => state.setSnapEnabled);
   const setCameraPreset = useStudioStore((state) => state.setCameraPreset);
-  const webmcpStatus = useStudioStore((state) => state.webmcpStatus);
   return (
     <div className="viewport-wrap">
       <StudioCanvas />
@@ -601,7 +628,7 @@ function Viewport() {
         <button className={snap ? 'active-subtle' : ''} type="button" onClick={() => setSnap(!snap)} aria-label="Toggle grid snapping"><Grid3X3 /><kbd>SNAP</kbd></button>
       </div>
       <div className="camera-presets"><button onClick={() => setCameraPreset('top')}>TOP</button><button onClick={() => setCameraPreset('front')}>FRONT</button><button onClick={() => setCameraPreset('iso')}>ISO</button></div>
-      <div className="agent-pulse"><Sparkles /><span><strong>{webmcpStatus === 'ready' ? 'Agent ready' : 'Shared scene'}</strong> · Try “cut the sphere from the selected box”</span></div>
+      <AgentTaskIndicator />
     </div>
   );
 }
