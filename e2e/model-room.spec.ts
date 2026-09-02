@@ -118,6 +118,7 @@ test('registers the draft WebMCP contract and executes read, mutation, validatio
     const tools = (window as typeof window & { __modelRoomTools: Map<string, WebMcpToolDefinition> }).__modelRoomTools;
     const signal = new AbortController().signal;
     const summary = await tools.get('get_scene_summary')!.execute({}, { signal }) as { structuredContent: { revision: number; objectCount: number } };
+    const hostCompatibleSummary = await (tools.get('get_scene_summary')!.execute as unknown as (input: object) => Promise<{ structuredContent: { revision: number } }>)({});
     const added = await tools.get('add_primitive')!.execute({ primitive_type: 'sphere', name: 'Browser sphere', position: [-2, 0.5, 0] }, { signal }) as { structuredContent: { revision: number; affectedObjectIds: string[] } };
     const objectId = added.structuredContent.affectedObjectIds[0];
     const material = await tools.get('set_object_material')!.execute({ object_id: objectId, color: '#f15722' }, { signal }) as { structuredContent: { revision: number; objects: Array<{ material: { color: string } }> } };
@@ -140,6 +141,7 @@ test('registers the draft WebMCP contract and executes read, mutation, validatio
     const after = await tools.get('get_scene_summary')!.execute({}, { signal }) as { structuredContent: { revision: number; objectCount: number } };
     return {
       startRevision: summary.structuredContent.revision,
+      hostCompatibleRevision: hostCompatibleSummary.structuredContent.revision,
       startCount: summary.structuredContent.objectCount,
       objectId,
       addRevision: added.structuredContent.revision,
@@ -158,6 +160,7 @@ test('registers the draft WebMCP contract and executes read, mutation, validatio
     cancellationName: 'AbortError',
   });
   expect(browserResult.invalidIdError).toContain('not found');
+  expect(browserResult.hostCompatibleRevision).toBe(browserResult.startRevision);
   expect(browserResult.addRevision).toBe(browserResult.startRevision + 1);
   expect(browserResult.materialRevision).toBe(browserResult.addRevision + 1);
   expect(browserResult.finalRevision).toBe(browserResult.materialRevision);

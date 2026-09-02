@@ -149,9 +149,10 @@ function tool(
       readOnlyHint: annotations.readOnlyHint ?? false,
       untrustedContentHint: annotations.untrustedContentHint ?? true,
     },
-    execute: async (input: object, options: ToolExecuteOptions) => {
-      throwIfAborted(options.signal);
-      return execute(input, options);
+    execute: async (input: object, options?: ToolExecuteOptions) => {
+      const signal = options?.signal ?? new AbortController().signal;
+      throwIfAborted(signal);
+      return execute(input, { signal });
     },
   } satisfies WebMcpToolDefinition;
 }
