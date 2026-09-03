@@ -529,8 +529,7 @@ function operationToCommand(operation: z.infer<typeof transactionOperation>): Sc
 }
 
 export async function registerWebMcpTools() {
-  const modelContext = document.modelContext;
-  if (typeof modelContext?.registerTool !== 'function') {
+  if (typeof document.modelContext?.registerTool !== 'function') {
     useStudioStore.getState().setWebMcpStatus('unavailable');
     return () => undefined;
   }
@@ -775,7 +774,10 @@ export async function registerWebMcpTools() {
   ];
 
   try {
-    await Promise.all(definitions.map((definition) => modelContext.registerTool(definition, { signal: controller.signal })));
+    await Promise.all(definitions.map((definition) => {
+      if (!document.modelContext) throw new Error('WebMCP became unavailable during registration.');
+      return document.modelContext.registerTool(definition, { signal: controller.signal });
+    }));
     useStudioStore.getState().setWebMcpStatus('ready');
   } catch (error) {
     controller.abort();

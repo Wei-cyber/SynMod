@@ -48,3 +48,7 @@ Safe transactions can rebase across unrelated human edits while rejecting change
 Projects and imported assets stay in the browser's IndexedDB. A read-only share link embeds the scene document in the URL; anyone with that link can read its contents. There is no signed-in cloud storage, multi-user synchronization, animation timeline, rigging, or face/vertex editing.
 
 More context is in the [product brief](docs/product-brief.md), [case study](docs/case-study.md), and [evidence notes](docs/user-evidence.md).
+
+## License
+
+SynMod is open-source software available under the [MIT License](LICENSE).

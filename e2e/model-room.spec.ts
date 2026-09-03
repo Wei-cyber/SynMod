@@ -62,6 +62,7 @@ test('shows the primitive palette and the complete Rover Study outliner', async 
 
 test('keeps Export and Boolean menus opaque and above the editor while all outliner actions stay in bounds', async ({ page }) => {
   await page.goto('/');
+  await expect(page.getByText('Human editing', { exact: true })).toBeVisible();
 
   await page.getByRole('button', { name: 'Export', exact: true }).click();
   await expectOpaqueTopmostMenu(page, 'Editable project JSON');
