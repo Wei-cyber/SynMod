@@ -5,6 +5,25 @@ SynMod is a desktop-first 3D collaboration studio for one person and a browser a
 The first visit opens an editable **Rover Study** with a procedural axle tunnel, articulated crane, gripper, sensor rig, emissive headlights, and PBR materials. The app supports parametric boxes, spheres, cylinders, cones, and toruses; transforms and PBR materials; grouping; non-destructive Boolean operations; local checkpoints and branches; JSON/GLB import and export; viewport PNG export; environment lighting; and read-only links embedded entirely in the URL. Fast WebMCP tools resolve normalized names, place primitives relative to world-space bounds, and apply up to 50 safe operations as one reversible transaction.
 
 Try [SynMod](https://synmod.jquan287619461.chatgpt.site/)
+## Why WebMCP fits SynMod
+
+3D modeling combines visual judgment with precise, structured operations. A person may decide that a rover’s gripping tips looks too small, while an agent can translate that direction into exact changes to position, scale, geometry, or material. WebMCP connects those two ways of working.
+
+SynMod registers its modeling capabilities directly with the browser through `document.modelContext.registerTool(...)`. This lets ChatGPT inspect and modify the open scene using tools defined by the application. SynMod does not need an embedded chatbot or a separate OpenAI API key.
+
+The person and agent operate on the same scene state. A person can select and reshape one component through the visual editor while the agent adds or refines another component. Agent operations appear immediately in the viewport, are identified in the activity history, and use the same validation, autosave, and undo/redo system as human edits.
+
+Together, people and agents can:
+
+- Find objects by name and inspect their dimensions and transforms.
+- Add boxes, spheres, cylinders, cones, and toruses.
+- Move, rotate, scale, rename, recolor, duplicate, group, or hide objects.
+- Adjust PBR properties such as roughness, metalness, opacity, and emission.
+- Create non-destructive Boolean unions, subtractions, and intersections.
+- Change scene lighting, exposure, shadows, and environment presets.
+- Undo or redo changes made by either participant.
+
+WebMCP is useful here because the agent does not need to guess where to click or manipulate the canvas indirectly. It receives focused modeling tools, stable object references, validation errors, scene revisions, and structured results. The person remains responsible for creative direction and visual evaluation, while the agent can handle precise or repetitive scene operations.
 
 ## Run locally
 
@@ -39,17 +58,9 @@ Pull requests and pushes run the same `npm run quality` gate in GitHub Actions. 
 - `lib/share-links.ts` — compressed read-only project links with no cloud account or upload.
 - `e2e/model-room.spec.ts` — visibility regression and browser-level WebMCP contract/execution coverage.
 
-## WebMCP contract and safety
-
-Each registered tool has a human-readable title and the draft `readOnlyHint` and `untrustedContentHint` annotations. Execution callbacks accept `ToolExecuteCallbackOptions.signal`; cancelled calls reject before a synchronous mutation begins, and asynchronous sharing races against the signal. Results containing scene names, imported asset metadata, or other browser/user-supplied values are marked untrusted.
-
-Safe transactions can rebase across unrelated human edits while rejecting changes to their targets, hierarchy, Boolean dependencies, placement anchors, or scene settings. Temporary references let one transaction create an object and immediately recolor, group, transform, or use it in a Boolean operation without extra tool round trips. High-impact delete, restore, undo, and redo calls still require the exact current scene revision. Delete, restore, and link-sharing tools also require an in-page browser confirmation; the host browser still performs its own invocation review. SynMod deliberately exposes no agent-accessible “clear everything” command.
-
 ## Storage and privacy
 
 Projects and imported assets stay in the browser's IndexedDB. A read-only share link embeds the scene document in the URL; anyone with that link can read its contents. There is no signed-in cloud storage, multi-user synchronization, animation timeline, rigging, or face/vertex editing.
-
-More context is in the [product brief](docs/product-brief.md), [case study](docs/case-study.md), and [evidence notes](docs/user-evidence.md).
 
 ## License
 
